@@ -7,9 +7,11 @@
 *.app/
 
 # Runtime artifacts — created at launch, never committed
-data/
-config/
-.backup/
+# Leading slash anchors the pattern to the repo root so it does NOT
+# accidentally match Sources/NyctimeneCore/Config/ on case-insensitive APFS.
+/data/
+/config/
+/.backup/
 
 # macOS
 .DS_Store
