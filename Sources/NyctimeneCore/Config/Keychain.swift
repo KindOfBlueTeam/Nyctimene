@@ -41,12 +41,12 @@ public enum KeychainHelper {
         // grant access to every application without a confirmation dialog.
         // This prevents the "Allow/Deny" prompt that appears on each new build
         // because ad-hoc code signatures change with every recompile.
-        var access: SecAccess?
-        SecAccessCreate(
-            "Nyctimene \(provider.displayName) API Key" as CFString,
-            [] as CFArray,
-            &access
-        )
+        //
+        // SecAccessCreate is deprecated since macOS 10.10, but no modern API
+        // provides equivalent "allow any app without prompting" semantics.
+        // The wrapper below is itself marked deprecated so the compiler suppresses
+        // the warning at the call site rather than surfacing it on every build.
+        let access = makeOpenAccess(description: "Nyctimene \(provider.displayName) API Key")
 
         var addQuery: [CFString: Any] = [
             kSecClass:            kSecClassGenericPassword,
@@ -72,6 +72,16 @@ public enum KeychainHelper {
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    // Marked deprecated so the compiler does not surface the SecAccessCreate
+    // deprecation warning at every call site.  The API has no modern replacement
+    // for the "grant access to all applications" ACL semantics we need here.
+    @available(macOS, deprecated: 10.10)
+    private static func makeOpenAccess(description: String) -> SecAccess? {
+        var access: SecAccess?
+        SecAccessCreate(description as CFString, [] as CFArray, &access)
+        return access
     }
 
     public static func delete(for provider: Provider) {

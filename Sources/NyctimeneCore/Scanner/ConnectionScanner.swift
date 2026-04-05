@@ -93,7 +93,7 @@ public enum ConnectionScanner {
                 p.standardOutput = outPipe
                 p.standardError  = Pipe()
                 do {
-                    try p.launch()
+                    try p.run()     // run() replaced launch() in macOS 10.13 and is throwing
                     let data = outPipe.fileHandleForReading.readDataToEndOfFile()
                     p.waitUntilExit()
                     cont.resume(returning: String(data: data, encoding: .utf8) ?? "")
