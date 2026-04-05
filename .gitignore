@@ -1,0 +1,15 @@
+.build/
+.swiftpm/
+*.o
+*.d
+
+# Assembled app bundle (built by Scripts/build.sh, not committed)
+*.app/
+
+# Runtime artifacts — created at launch, never committed
+data/
+config/
+.backup/
+
+# macOS
+.DS_Store
