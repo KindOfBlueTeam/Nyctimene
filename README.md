@@ -6,6 +6,16 @@ Nyctimene is a macOS menubar tool for quickly looking up IP addresses, domains, 
 
 ---
 
+## Screnshots
+
+<img width="527" height="559" alt="2" src="https://github.com/user-attachments/assets/5f6ea868-4d01-4d67-9e76-53b8ef5ce616" />
+
+
+<img width="1080" height="713" alt="1" src="https://github.com/user-attachments/assets/e2f3643b-0ae2-4e91-963b-df30fff77028" />
+
+
+---
+
 ## Features
 
 | Capability | Detail |
