@@ -7,19 +7,14 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Owl header
-            if let img = NSImage(named: "owl") ?? Bundle.module.image(forResource: "owl") {
-                VStack(spacing: 8) {
-                    Image(nsImage: img)
-                        .resizable().scaledToFill()
-                        .frame(width: 90, height: 90)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 3)
-                    Text("Nyctimene")
-                        .font(.title2.bold())
-                }
-                .padding(.top, 20)
-                .padding(.bottom, 12)
+            // Logo header — name is embedded in the image
+            if let img = Bundle.module.image(forResource: "Nyctimene_text") {
+                Image(nsImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 110)
+                    .padding(.top, 20)
+                    .padding(.bottom, 12)
             }
 
             TabView(selection: $selectedTab) {

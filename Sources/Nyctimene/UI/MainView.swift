@@ -47,16 +47,12 @@ struct MainView: View {
 
     private var header: some View {
         HStack(spacing: 0) {
-            // Owl + app name
-            HStack(spacing: 10) {
-                if let img = NSImage(named: "owl") ?? Bundle.module.image(forResource: "owl") {
-                    Image(nsImage: img)
-                        .resizable().scaledToFill()
-                        .frame(width: 26, height: 26)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                Text("Nyctimene")
-                    .font(.title3.bold())
+            // Logo (text version — name is part of the image)
+            if let img = Bundle.module.image(forResource: "Nyctimene_text") {
+                Image(nsImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 30)
             }
 
             Spacer()

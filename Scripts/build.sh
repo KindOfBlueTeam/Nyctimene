@@ -35,10 +35,17 @@ cp "${BUILD_DIR}/${APP_NAME}" "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 # Info.plist
 cp "${INFO_PLIST}" "${APP_BUNDLE}/Contents/Info.plist"
 
-# SPM resource bundle (contains owl.png and other Resources/)
+# SPM resource bundle (contains images and other Resources/)
 RESOURCE_BUNDLE="${BUILD_DIR}/${APP_NAME}_${APP_NAME}.bundle"
 if [[ -d "${RESOURCE_BUNDLE}" ]]; then
     cp -r "${RESOURCE_BUNDLE}" "${APP_BUNDLE}/Contents/Resources/"
+fi
+
+# App icon — must live directly in Contents/Resources/ (not inside the SPM
+# bundle) so that macOS Finder, Dock, and the About box pick it up correctly.
+ICNS="${PROJECT_DIR}/Sources/${APP_NAME}/Resources/AppIcon.icns"
+if [[ -f "${ICNS}" ]]; then
+    cp "${ICNS}" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 fi
 
 # --- Ad-hoc code signing -----------------------------------------------------
