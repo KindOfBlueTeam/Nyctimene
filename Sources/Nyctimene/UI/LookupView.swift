@@ -802,12 +802,12 @@ struct LookupView: View {
 
     private func mbLevel(_ r: MalwareBazaarResult?) -> Int {
         guard let r else { return 1 }
-        return r.found ? 5 : 2
+        return r.found ? 5 : 1          // not found = N/A, not clean
     }
 
     private func tfLevel(_ r: ThreatFoxResult?) -> Int {
         guard let r else { return 1 }
-        if !r.found                    { return 2 }
+        if !r.found                    { return 1 }  // not found = N/A
         if r.confidenceLevel >= 75     { return 5 }
         if r.confidenceLevel >= 50     { return 4 }
         return 3
@@ -815,14 +815,14 @@ struct LookupView: View {
 
     private func uhLevel(_ r: URLhausResult?) -> Int {
         guard let r else { return 1 }
-        if !r.found                    { return 2 }
+        if !r.found                    { return 1 }  // not found = N/A
         if r.urlStatus == "online"     { return 5 }
         return r.urlCount > 3 ? 4 : 3
     }
 
     private func otxLevel(_ r: OTXProviderResult?) -> Int {
         guard let r else { return 1 }
-        if r.pulseCount == 0           { return 2 }
+        if r.pulseCount == 0           { return 1 }  // 0 pulses = N/A
         if r.pulseCount <= 2           { return 3 }
         if r.pulseCount <= 9           { return 4 }
         return 5
@@ -833,6 +833,7 @@ struct LookupView: View {
         if r.maliciousCount > 0                        { return 5 }
         if let s = r.latestScore, s > 50               { return 4 }
         if let s = r.latestScore, s > 20               { return 3 }
+        if r.scanCount == 0                            { return 1 }  // 0 scans = N/A
         return 2
     }
 }

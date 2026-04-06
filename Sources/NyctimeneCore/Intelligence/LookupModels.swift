@@ -135,7 +135,7 @@ public struct OTXProviderResult {
     public init(pulseCount: Int, reportURL: String) {
         self.pulseCount = pulseCount
         self.reportURL  = reportURL
-        self.riskLevel  = pulseCount == 0 ? .clean : pulseCount < 3 ? .suspicious : .malicious
+        self.riskLevel  = pulseCount == 0 ? .unknown : pulseCount < 3 ? .suspicious : .malicious
     }
 }
 
@@ -163,6 +163,7 @@ public struct URLScanProviderResult {
     public var riskLevel: RiskLevel {
         if maliciousCount > 0                       { return .malicious }
         if let s = latestScore, s > 50              { return .suspicious }
+        if scanCount == 0                           { return .unknown }
         return .clean
     }
 }
@@ -180,7 +181,7 @@ public struct MalwareBazaarResult {
     public let reportURL:     String
 
     /// Any hash present in MalwareBazaar is a confirmed malware sample.
-    public var riskLevel: RiskLevel { found ? .malicious : .clean }
+    public var riskLevel: RiskLevel { found ? .malicious : .unknown }
 }
 
 public struct ThreatFoxResult {
@@ -195,7 +196,7 @@ public struct ThreatFoxResult {
 
     /// C2 infrastructure confirmed by ThreatFox; confidence drives suspicious vs malicious.
     public var riskLevel: RiskLevel {
-        guard found else { return .clean }
+        guard found else { return .unknown }
         return confidenceLevel >= 75 ? .malicious : .suspicious
     }
 }
@@ -210,7 +211,7 @@ public struct URLhausResult {
 
     /// Active malware distribution (online) = malicious; historical/offline = suspicious.
     public var riskLevel: RiskLevel {
-        guard found else { return .clean }
+        guard found else { return .unknown }
         return urlStatus == "online" ? .malicious : .suspicious
     }
 }

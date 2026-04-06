@@ -88,16 +88,7 @@ struct RadarChartView: View {
                     }
                 }
 
-                // Score text (above badge polygon)
-                VStack(spacing: 1) {
-                    Text("\(score)")
-                        .font(.system(size: 22, weight: .black, design: .rounded))
-                        .foregroundColor(accentColor)
-                    Text("/ 100")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundColor(.secondary)
-                }
-                .position(x: cx, y: cy)
+                // (center badge polygon is drawn empty — branding element only)
             }
         }
     }
@@ -160,119 +151,177 @@ struct RadarChartView: View {
     }
 }
 
-// MARK: - XY scatter view (exactly 2 sources)
+// MARK: - Balance beam view (exactly 2 sources)
 
 struct XYRiskView: View {
-    let axes:      [RadarAxis]   // axes[0] = X axis, axes[1] = Y axis
+    let axes:      [RadarAxis]   // axes[0] = left source, axes[1] = right source
     let score:     Int
     let riskLevel: RiskLevel
 
-    private let padL: CGFloat = 50
-    private let padB: CGFloat = 50
-    private let padT: CGFloat = 14
-    private let padR: CGFloat = 14
-    private let badgeR: CGFloat = 22
+    private let beamH:   CGFloat = 14     // beam bar thickness
+    private let badgeR:  CGFloat = 24     // hexagon half-width
+    private let tickH:   CGFloat = 20     // tick mark height (above + below beam)
 
     var body: some View {
         GeometryReader { geo in
             let w    = geo.size.width
             let h    = geo.size.height
-            let pw   = w - padL - padR
-            let ph   = h - padB - padT
+            let padX: CGFloat = 28                      // horizontal inset for beam
+            let beamW = w - padX * 2
+            let cy    = h / 2                           // vertical center
 
-            // Screen coords: origin = top-left, Y grows down
-            // Plot origin (bottom-left in chart space) = (padL, h - padB)
-            let xFrac = levelFraction(axes[0].level)
-            let yFrac = levelFraction(axes[1].level)
-            let dotX  = padL + xFrac * pw
-            let dotY  = (h - padB) - yFrac * ph
+            // Level fractions (1→0, 2→0.25, 3→0.5, 4→0.75, 5→1.0)
+            let lFrac = levelFraction(axes[0].level)
+            let rFrac = levelFraction(axes[1].level)
+
+            // Badge position: 0.5 = centered (both equal). If right is higher,
+            // badge slides right; if left is higher, it slides left.
+            let balance = 0.5 + (rFrac - lFrac) / 2.0
+            let badgeX  = padX + balance * beamW
+
+            let lColor = levelColor(axes[0].level)
+            let rColor = levelColor(axes[1].level)
+            let accent = riskAccent(riskLevel)
 
             ZStack {
                 Canvas { ctx, _ in
-                    let plotTop    = padT
-                    let plotBottom = h - padB
-                    let plotLeft   = padL
-                    let plotRight  = padL + pw
+                    let beamTop = cy - beamH / 2
+                    let beamBot = cy + beamH / 2
+                    let beamLeft  = padX
+                    let beamRight = padX + beamW
+                    let midX      = padX + beamW / 2
 
-                    // Grid lines at each level (0/4, 1/4, 2/4, 3/4, 4/4)
-                    for i in 0...4 {
-                        let t = CGFloat(i) / 4.0
-                        let isEdge = (i == 0 || i == 4)
-                        let opacity: CGFloat = isEdge ? 0.28 : 0.10
+                    // 1. Beam track (full width, dark)
+                    let track = Path(roundedRect:
+                        CGRect(x: beamLeft, y: beamTop, width: beamW, height: beamH),
+                        cornerRadius: beamH / 2)
+                    ctx.fill(track, with: .color(.secondary.opacity(0.12)))
+                    ctx.stroke(track, with: .color(.secondary.opacity(0.25)), lineWidth: 0.5)
 
-                        var vLine = Path()
-                        vLine.move(to: .init(x: plotLeft + t * pw, y: plotTop))
-                        vLine.addLine(to: .init(x: plotLeft + t * pw, y: plotBottom))
-                        ctx.stroke(vLine, with: .color(.secondary.opacity(opacity)),
-                                   lineWidth: isEdge ? 1 : 0.5)
-
-                        var hLine = Path()
-                        hLine.move(to: .init(x: plotLeft, y: plotBottom - t * ph))
-                        hLine.addLine(to: .init(x: plotRight, y: plotBottom - t * ph))
-                        ctx.stroke(hLine, with: .color(.secondary.opacity(opacity)),
-                                   lineWidth: isEdge ? 1 : 0.5)
+                    // 2. Left source fill — from left edge to center, height = level fraction
+                    let lFillW = (midX - beamLeft) * lFrac
+                    if lFillW > 0 {
+                        let lRect = CGRect(x: midX - lFillW, y: beamTop, width: lFillW, height: beamH)
+                        let lClip = Path(roundedRect:
+                            CGRect(x: beamLeft, y: beamTop, width: beamW, height: beamH),
+                            cornerRadius: beamH / 2)
+                        ctx.clip(to: lClip)
+                        ctx.fill(Path(lRect), with: .color(lColor.opacity(0.45)))
+                        // Reset clip by drawing full size
+                        ctx.clip(to: Path(CGRect(x: 0, y: 0, width: w, height: h)))
                     }
 
-                    // Crosshair dashes to the badge
-                    var cv = Path()
-                    cv.move(to: .init(x: dotX, y: plotTop))
-                    cv.addLine(to: .init(x: dotX, y: plotBottom))
-                    ctx.stroke(cv, with: .color(riskAccent(riskLevel).opacity(0.28)),
-                               style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    // 3. Right source fill — from center to right edge
+                    let rFillW = (beamRight - midX) * rFrac
+                    if rFillW > 0 {
+                        let rRect = CGRect(x: midX, y: beamTop, width: rFillW, height: beamH)
+                        let rClip = Path(roundedRect:
+                            CGRect(x: beamLeft, y: beamTop, width: beamW, height: beamH),
+                            cornerRadius: beamH / 2)
+                        ctx.clip(to: rClip)
+                        ctx.fill(Path(rRect), with: .color(rColor.opacity(0.45)))
+                        ctx.clip(to: Path(CGRect(x: 0, y: 0, width: w, height: h)))
+                    }
 
-                    var ch = Path()
-                    ch.move(to: .init(x: plotLeft, y: dotY))
-                    ch.addLine(to: .init(x: plotRight, y: dotY))
-                    ctx.stroke(ch, with: .color(riskAccent(riskLevel).opacity(0.28)),
-                               style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    // 4. Tick marks at each level (5 ticks per side)
+                    for side in 0...1 {
+                        let sideLeft  = side == 0 ? beamLeft : midX
+                        let sideW     = side == 0 ? (midX - beamLeft) : (beamRight - midX)
+                        for i in 0...4 {
+                            let t  = CGFloat(i) / 4.0
+                            let tx: CGFloat
+                            if side == 0 {
+                                tx = midX - t * sideW     // left side: ticks go outward from center
+                            } else {
+                                tx = midX + t * sideW     // right side: ticks go outward from center
+                            }
+                            let isEnd = (i == 4)
+                            var tick = Path()
+                            tick.move(to: .init(x: tx, y: cy - tickH / 2))
+                            tick.addLine(to: .init(x: tx, y: cy + tickH / 2))
+                            ctx.stroke(tick,
+                                       with: .color(.secondary.opacity(isEnd ? 0.3 : 0.15)),
+                                       lineWidth: isEnd ? 1 : 0.5)
+                        }
+                    }
 
-                    // Badge hexagon at the intersection — this IS the data point
-                    let badge = hexPath(cx: dotX, cy: dotY, r: badgeR)
+                    // 5. Center line
+                    var centerLine = Path()
+                    centerLine.move(to: .init(x: midX, y: cy - tickH / 2 - 2))
+                    centerLine.addLine(to: .init(x: midX, y: cy + tickH / 2 + 2))
+                    ctx.stroke(centerLine, with: .color(.secondary.opacity(0.4)), lineWidth: 1)
+
+                    // 6. Connector line from center to badge
+                    var connector = Path()
+                    connector.move(to: .init(x: midX, y: cy))
+                    connector.addLine(to: .init(x: badgeX, y: cy))
+                    ctx.stroke(connector, with: .color(accent.opacity(0.5)),
+                               style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+
+                    // 7. Badge hexagon at the balance point
+                    let badge = hexPath(cx: badgeX, cy: cy, r: badgeR)
                     ctx.fill(badge, with: .color(Color(NSColor.windowBackgroundColor)))
-                    ctx.stroke(badge, with: .color(riskAccent(riskLevel).opacity(0.8)), lineWidth: 1.5)
+                    ctx.stroke(badge, with: .color(accent.opacity(0.8)), lineWidth: 1.5)
                 }
 
-                // Score in badge
-                VStack(spacing: 0) {
-                    Text("\(score)")
-                        .font(.system(size: 13, weight: .black, design: .rounded))
-                        .foregroundColor(riskAccent(riskLevel))
-                    Text("/ 100")
-                        .font(.system(size: 6, weight: .semibold))
+                // Source label + level indicator — LEFT
+                VStack(spacing: 4) {
+                    Text(axes[0].label)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(lColor)
+                    Text(levelLabel(axes[0].level))
+                        .font(.system(size: 8, weight: .medium))
                         .foregroundColor(.secondary)
+                    if let detail = axes[0].rawDetail {
+                        Text(detail)
+                            .font(.system(size: 7.5).monospaced())
+                            .foregroundColor(.secondary.opacity(0.7))
+                    }
                 }
-                .position(x: dotX, y: dotY)
+                .position(x: padX + beamW * 0.15, y: cy - 58)
 
-                // X axis source label (bottom center)
-                Text(axes[0].label)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(axisLabelColor(axes[0].level))
-                    .position(x: padL + pw / 2, y: h - padB / 2)
+                // Source label + level indicator — RIGHT
+                VStack(spacing: 4) {
+                    Text(axes[1].label)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(rColor)
+                    Text(levelLabel(axes[1].level))
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundColor(.secondary)
+                    if let detail = axes[1].rawDetail {
+                        Text(detail)
+                            .font(.system(size: 7.5).monospaced())
+                            .foregroundColor(.secondary.opacity(0.7))
+                    }
+                }
+                .position(x: padX + beamW * 0.85, y: cy - 58)
 
-                // Y axis source label (left, rotated)
-                Text(axes[1].label)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(axisLabelColor(axes[1].level))
-                    .rotationEffect(.degrees(-90))
-                    .position(x: padL / 2 - 4, y: padT + ph / 2)
+                // "Clean" / "Confirmed" endpoint labels
+                Text("Clean")
+                    .font(.system(size: 7)).foregroundColor(.secondary.opacity(0.45))
+                    .position(x: padX, y: cy + tickH / 2 + 12)
+                Text("▼")
+                    .font(.system(size: 7)).foregroundColor(.secondary.opacity(0.2))
+                    .position(x: padX + beamW / 2, y: cy + tickH / 2 + 12)
+                Text("Clean")
+                    .font(.system(size: 7)).foregroundColor(.secondary.opacity(0.45))
+                    .position(x: padX + beamW, y: cy + tickH / 2 + 12)
 
-                // X endpoint tick labels
-                Text("N/A")
-                    .font(.system(size: 6)).foregroundColor(.secondary.opacity(0.45))
-                    .position(x: padL, y: h - padB + 10)
-                Text("Confirmed")
-                    .font(.system(size: 6)).foregroundColor(.secondary.opacity(0.45))
-                    .position(x: padL + pw, y: h - padB + 10)
-
-                // Y endpoint tick labels
-                Text("N/A")
-                    .font(.system(size: 6)).foregroundColor(.secondary.opacity(0.45))
-                    .position(x: padL - 16, y: h - padB)
-                Text("Cfm")
-                    .font(.system(size: 6)).foregroundColor(.secondary.opacity(0.45))
-                    .position(x: padL - 16, y: padT)
+                // Agreement label below center
+                Text(agreementLabel)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(accent.opacity(0.8))
+                    .position(x: w / 2, y: cy + 48)
             }
         }
+    }
+
+    /// Human-readable agreement summary
+    private var agreementLabel: String {
+        let l = axes[0].level, r = axes[1].level
+        if l == r { return "Sources agree" }
+        let diff = abs(l - r)
+        return diff >= 3 ? "Sources disagree" : "Partial agreement"
     }
 
     private func levelFraction(_ level: Int) -> CGFloat {
@@ -280,13 +329,23 @@ struct XYRiskView: View {
         return CGFloat(level - 1) / 4.0
     }
 
-    private func axisLabelColor(_ level: Int) -> Color {
+    private func levelColor(_ level: Int) -> Color {
         switch level {
-        case 2: return .green
-        case 3: return .yellow
-        case 4: return .orange
-        case 5: return .red
-        default: return .secondary
+        case 2:  return .green
+        case 3:  return .yellow
+        case 4:  return .orange
+        case 5:  return .red
+        default: return .secondary.opacity(0.4)
+        }
+    }
+
+    private func levelLabel(_ level: Int) -> String {
+        switch level {
+        case 2:  return "Clean"
+        case 3:  return "Low signal"
+        case 4:  return "Likely"
+        case 5:  return "Confirmed"
+        default: return "N/A"
         }
     }
 

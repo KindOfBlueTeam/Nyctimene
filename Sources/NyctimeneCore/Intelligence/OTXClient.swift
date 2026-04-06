@@ -27,9 +27,13 @@ public class OTXClient {
     // MARK: - Private
 
     private func lookupDomain(_ domain: String, key: String) async throws -> OTXProviderResult {
-        let url = URL(string: "\(base)/domain/\(domain)/general")!
+        // OTX distinguishes root domains (/domain/) from subdomains (/hostname/).
+        // "evil.com" → 2 labels → /domain/;  "api.evil.com" → 3+ labels → /hostname/
+        let isHostname = domain.split(separator: ".").count > 2
+        let kind       = isHostname ? "hostname" : "domain"
+        let url = URL(string: "\(base)/\(kind)/\(domain)/general")!
         let data = try await fetch(url, key: key)
-        let reportURL = "https://otx.alienvault.com/indicator/domain/\(domain)"
+        let reportURL = "https://otx.alienvault.com/indicator/\(kind)/\(domain)"
         return try parsePulses(data, reportURL: reportURL)
     }
 
