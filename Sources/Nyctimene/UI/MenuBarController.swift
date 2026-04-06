@@ -11,13 +11,21 @@ class MenuBarController {
         }
 
         let menu = NSMenu()
-        menu.addItem(withTitle: "Analyze...",      action: #selector(openLookup),                  keyEquivalent: "")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Settings...",     action: #selector(openSettings),                keyEquivalent: ",")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Nyctimene",  action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
-        for item in menu.items { item.target = self }
+        let analyzeItem  = NSMenuItem(title: "Analyze...",     action: #selector(openLookup),    keyEquivalent: "")
+        let settingsItem = NSMenuItem(title: "Settings...",    action: #selector(openSettings),  keyEquivalent: ",")
+        let quitItem     = NSMenuItem(title: "Quit Nyctimene", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        analyzeItem.target  = self
+        settingsItem.target = self
+        quitItem.target     = NSApp   // must target NSApp directly; targeting self greys it out
+
+        menu.addItem(analyzeItem)
+        menu.addItem(.separator())
+        menu.addItem(settingsItem)
+        menu.addItem(.separator())
+        menu.addItem(quitItem)
+
         statusItem.menu = menu
     }
 
