@@ -7,7 +7,13 @@ class MenuBarController {
     func setup() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "eyes", accessibilityDescription: "Nyctimene")
+            if let img = Bundle.module.image(forResource: "Nyctimene_logo") {
+                img.size = NSSize(width: 18, height: 18)
+                img.isTemplate = false
+                button.image = img
+            } else {
+                button.image = NSImage(systemSymbolName: "eyes", accessibilityDescription: "Nyctimene")
+            }
         }
 
         let menu = NSMenu()
