@@ -27,6 +27,55 @@ public struct Artifact {
     }
 }
 
+// MARK: - Nyctimene Risk Score
+
+/// A single provider's contribution to the Nyctimene Risk Score.
+/// Add new cases here as additional scoring sources are integrated.
+public struct NycRiskSignal {
+    public let source:    String
+    public let riskLevel: RiskLevel
+
+    public init(source: String, riskLevel: RiskLevel) {
+        self.source    = source
+        self.riskLevel = riskLevel
+    }
+}
+
+/// Aggregate risk score computed from one or more provider signals.
+/// Only sources with confirmed malicious/suspicious activity should be added as signals;
+/// contextual providers (Shodan, IPInfo, OTX) are displayed separately.
+public struct NycRiskScore {
+    /// All signals that contributed to this score.
+    public let signals: [NycRiskSignal]
+
+    /// Highest risk level across all signals; .unknown when no signals are present.
+    public var level: RiskLevel {
+        signals.map(\.riskLevel).max() ?? .unknown
+    }
+
+    /// Signals that flagged something (suspicious or higher).
+    public var flagged: [NycRiskSignal] {
+        signals.filter { $0.riskLevel >= .suspicious }
+    }
+
+    /// 0–10 composite score.
+    /// Each malicious signal contributes 7 pts, each suspicious 3 pts. Clamped to 10.
+    public var numericScore: Int {
+        let pts = signals.reduce(0) { acc, s in
+            switch s.riskLevel {
+            case .malicious:  return acc + 7
+            case .suspicious: return acc + 3
+            default:          return acc
+            }
+        }
+        return min(10, pts)
+    }
+
+    public init(signals: [NycRiskSignal]) {
+        self.signals = signals
+    }
+}
+
 // MARK: - Risk level
 
 public enum RiskLevel: Int, Comparable {
@@ -60,11 +109,18 @@ public struct VTProviderResult {
     public let fileSize: Int?
 
     public init(score: Int, total: Int, reportURL: String,
+                suspiciousThreshold: Int = 1, maliciousThreshold: Int = 3,
                 fileName: String? = nil, fileType: String? = nil, fileSize: Int? = nil) {
         self.score     = score
         self.total     = total
         self.reportURL = reportURL
-        self.riskLevel = score == 0 ? .clean : score < 3 ? .suspicious : .malicious
+        if score == 0 {
+            self.riskLevel = .clean
+        } else if score < maliciousThreshold {
+            self.riskLevel = .suspicious
+        } else {
+            self.riskLevel = .malicious
+        }
         self.fileName  = fileName
         self.fileType  = fileType
         self.fileSize  = fileSize
@@ -111,6 +167,54 @@ public struct URLScanProviderResult {
     }
 }
 
+public struct MalwareBazaarResult {
+    public let found:         Bool
+    public let sha256:        String?
+    public let md5:           String?
+    public let fileName:      String?
+    public let fileType:      String?
+    public let fileSize:      Int?
+    public let malwareFamily: String?   // "signature" field — malware family name
+    public let tags:          [String]
+    public let firstSeen:     String?
+    public let reportURL:     String
+
+    /// Any hash present in MalwareBazaar is a confirmed malware sample.
+    public var riskLevel: RiskLevel { found ? .malicious : .clean }
+}
+
+public struct ThreatFoxResult {
+    public let found:           Bool
+    public let threatType:      String?   // "botnet_cc", "payload_delivery", etc.
+    public let malwareFamily:   String?   // printable malware name
+    public let confidenceLevel: Int       // 0–100 as reported by ThreatFox
+    public let firstSeen:       String?
+    public let lastSeen:        String?
+    public let tags:            [String]
+    public let reportURL:       String
+
+    /// C2 infrastructure confirmed by ThreatFox; confidence drives suspicious vs malicious.
+    public var riskLevel: RiskLevel {
+        guard found else { return .clean }
+        return confidenceLevel >= 75 ? .malicious : .suspicious
+    }
+}
+
+public struct URLhausResult {
+    public let found:      Bool
+    public let urlStatus:  String?   // "online" | "offline" | "unknown" (nil = host lookup)
+    public let threat:     String?   // e.g. "malware_download"
+    public let urlCount:   Int       // number of URLs seen for host lookups
+    public let tags:       [String]
+    public let reportURL:  String
+
+    /// Active malware distribution (online) = malicious; historical/offline = suspicious.
+    public var riskLevel: RiskLevel {
+        guard found else { return .clean }
+        return urlStatus == "online" ? .malicious : .suspicious
+    }
+}
+
 // MARK: - IPInfo result (ownership context, not a threat signal)
 
 public struct IPInfoProviderResult {
@@ -129,22 +233,38 @@ public struct IPInfoProviderResult {
 
 public struct LookupResult {
     public let artifact: Artifact
-    public var vtResult:      VTProviderResult?
-    public var otxResult:     OTXProviderResult?
-    public var shodanResult:  ShodanProviderResult?
-    public var urlScanResult: URLScanProviderResult?
-    public var domainInfo:    DomainInfo?
-    public var ipInfoResult:  IPInfoProviderResult?
+    public var vtResult:             VTProviderResult?
+    public var otxResult:            OTXProviderResult?
+    public var shodanResult:         ShodanProviderResult?
+    public var urlScanResult:        URLScanProviderResult?
+    public var domainInfo:           DomainInfo?
+    public var ipInfoResult:         IPInfoProviderResult?
+    public var malwareBazaarResult:  MalwareBazaarResult?
+    public var threatFoxResult:      ThreatFoxResult?
+    public var urlhausResult:        URLhausResult?
 
-    public var overallRisk: RiskLevel {
-        // Shodan is excluded: it reports exposure (open ports / CVEs), not confirmed
-        // malicious activity. Including it inflated risk scores for benign hosts.
-        [vtResult?.riskLevel,
-         otxResult?.riskLevel,
-         urlScanResult?.riskLevel]
-            .compactMap { $0 }
-            .max() ?? .unknown
+    /// Nyctimene Risk Score — scored sources only.
+    /// OTX pulse counts, Shodan exposure, URLScan, and IPInfo are shown as context cards.
+    /// Add new NycRiskSignal entries here as additional scoring sources are integrated.
+    public var nycRiskScore: NycRiskScore {
+        var signals: [NycRiskSignal] = []
+        if let vt = vtResult {
+            signals.append(NycRiskSignal(source: "VirusTotal",    riskLevel: vt.riskLevel))
+        }
+        if let mb = malwareBazaarResult {
+            signals.append(NycRiskSignal(source: "MalwareBazaar", riskLevel: mb.riskLevel))
+        }
+        if let tf = threatFoxResult {
+            signals.append(NycRiskSignal(source: "ThreatFox",     riskLevel: tf.riskLevel))
+        }
+        if let uh = urlhausResult {
+            signals.append(NycRiskSignal(source: "URLhaus",        riskLevel: uh.riskLevel))
+        }
+        return NycRiskScore(signals: signals)
     }
+
+    /// Convenience accessor — use nycRiskScore for the full signal breakdown.
+    public var overallRisk: RiskLevel { nycRiskScore.level }
 
     public init(artifact: Artifact) {
         self.artifact = artifact

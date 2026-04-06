@@ -22,6 +22,10 @@ struct SettingsView: View {
                     .tabItem { Label("Providers", systemImage: "key.horizontal") }
                     .tag(SettingsTab.providers)
 
+                ScoringTab(settings: $store.settings, onSave: store.save)
+                    .tabItem { Label("Scoring", systemImage: "slider.horizontal.3") }
+                    .tag(SettingsTab.scoring)
+
                 AppearanceTab(settings: $store.settings, onSave: store.save)
                     .tabItem { Label("Appearance", systemImage: "paintbrush") }
                     .tag(SettingsTab.appearance)
@@ -38,7 +42,7 @@ struct SettingsView: View {
 }
 
 enum SettingsTab: String, CaseIterable {
-    case providers, appearance, blockList = "Block List"
+    case providers, scoring, appearance, blockList = "Block List"
 }
 
 // MARK: - Providers Tab
@@ -72,7 +76,13 @@ struct ProviderRow: View {
                 Toggle("", isOn: enabledBinding)
                     .labelsHidden()
                     .onChange(of: enabledFor(provider)) { _ in onSave() }
-                Text(provider.displayName).font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(provider.displayName).font(.headline)
+                    if provider == .abuseCh {
+                        Text("One key covers MalwareBazaar · ThreatFox · URLhaus")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
                 Spacer()
             }
 
@@ -109,6 +119,7 @@ struct ProviderRow: View {
         case .shodan:     return settings.shodanEnabled
         case .urlScan:    return settings.urlScanEnabled
         case .ipInfo:     return settings.ipInfoEnabled
+        case .abuseCh:    return settings.abuseChEnabled
         }
     }
 
@@ -119,7 +130,95 @@ struct ProviderRow: View {
         case .shodan:     settings.shodanEnabled     = val
         case .urlScan:    settings.urlScanEnabled    = val
         case .ipInfo:     settings.ipInfoEnabled     = val
+        case .abuseCh:    settings.abuseChEnabled    = val
         }
+    }
+}
+
+// MARK: - Scoring Tab
+
+struct ScoringTab: View {
+    @Binding var settings: AppSettings
+    let onSave: () -> Void
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Suspicious at ≥ \(settings.vtSuspiciousThreshold) detection\(settings.vtSuspiciousThreshold == 1 ? "" : "s")")
+                        .font(.subheadline)
+                    Slider(
+                        value: Binding(
+                            get: { Double(settings.vtSuspiciousThreshold) },
+                            set: { newVal in
+                                let v = max(1, Int(newVal))
+                                settings.vtSuspiciousThreshold = v
+                                // Malicious must always be at least suspicious + 1
+                                if settings.vtMaliciousThreshold <= v {
+                                    settings.vtMaliciousThreshold = v + 1
+                                }
+                                onSave()
+                            }
+                        ),
+                        in: 1...Double(settings.vtMaliciousThreshold - 1),
+                        step: 1
+                    )
+
+                    Text("Malicious at ≥ \(settings.vtMaliciousThreshold) detections")
+                        .font(.subheadline)
+                        .padding(.top, 6)
+                    Slider(
+                        value: Binding(
+                            get: { Double(settings.vtMaliciousThreshold) },
+                            set: { newVal in
+                                let v = max(settings.vtSuspiciousThreshold + 1, Int(newVal))
+                                settings.vtMaliciousThreshold = v
+                                onSave()
+                            }
+                        ),
+                        in: Double(settings.vtSuspiciousThreshold + 1)...50,
+                        step: 1
+                    )
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Label("VirusTotal Detection Thresholds", systemImage: "shield.lefthalf.filled")
+            } footer: {
+                Text("Any score below the Suspicious threshold is shown as Clean. Scores from \(settings.vtSuspiciousThreshold)–\(settings.vtMaliciousThreshold - 1) are Suspicious. \(settings.vtMaliciousThreshold)+ are Malicious.")
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+            }
+
+            Section {
+                HStack {
+                    riskPill("Clean", color: .green)
+                    Text("0 detections")
+                    Spacer()
+                }
+                HStack {
+                    riskPill("Suspicious", color: .orange)
+                    Text("\(settings.vtSuspiciousThreshold)–\(settings.vtMaliciousThreshold - 1) detection\(settings.vtMaliciousThreshold - 1 == 1 ? "" : "s")")
+                    Spacer()
+                }
+                HStack {
+                    riskPill("Malicious", color: .red)
+                    Text("≥ \(settings.vtMaliciousThreshold) detections")
+                    Spacer()
+                }
+            } header: {
+                Label("Current Classification", systemImage: "chart.bar")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func riskPill(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(.caption.bold())
+            .foregroundColor(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color, in: Capsule())
     }
 }
 
@@ -162,25 +261,68 @@ struct AppearanceTab: View {
 // MARK: - Block List Tab
 
 struct BlockListTab: View {
-    @State private var blocked: [String] = []
+    @State private var blocked:    [String] = []
+    @State private var newDomain:  String   = ""
+    @State private var statusMsg:  String   = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+
+            // Description
+            VStack(alignment: .leading, spacing: 6) {
+                Label("How blocking works", systemImage: "info.circle")
+                    .font(.caption.bold())
+                    .foregroundColor(.secondary)
+                Text("Blocked domains are written to /etc/hosts as 0.0.0.0, which prevents all DNS resolution on this Mac. Each change requires a one-time administrator password prompt. You can also block a domain from the Analyze tab after running a lookup.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            // Add domain row
+            HStack(spacing: 8) {
+                TextField("domain.example.com", text: $newDomain)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body.monospaced())
+                    .onSubmit { addDomain() }
+                Button("Block") { addDomain() }
+                    .disabled(newDomain.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            if !statusMsg.isEmpty {
+                Text(statusMsg)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
+
+            Divider()
+
+            // List header
             HStack {
-                Text("\(blocked.count) blocked domains")
+                Text("\(blocked.count) blocked domain\(blocked.count == 1 ? "" : "s")")
                     .font(.caption).foregroundColor(.secondary)
                 Spacer()
                 Button("Refresh") { load() }
+                    .font(.caption)
             }
-            .padding([.horizontal, .top])
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
 
             if blocked.isEmpty {
                 Spacer()
                 HStack {
                     Spacer()
-                    Text("No domains blocked yet.\nUse the Analyze window to block a domain.")
+                    Text("No domains blocked yet.")
                         .font(.callout).foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
                     Spacer()
                 }
                 Spacer()
@@ -191,7 +333,8 @@ struct BlockListTab: View {
                             Text(domain).font(.body.monospaced())
                             Spacer()
                             Button("Unblock") {
-                                HostsManager.unblock(domain)
+                                let ok = HostsManager.unblock(domain)
+                                statusMsg = ok ? "Unblocked \(domain)." : "Failed to unblock \(domain) — check admin permissions."
                                 load()
                             }
                             .buttonStyle(.borderless)
@@ -203,6 +346,19 @@ struct BlockListTab: View {
             }
         }
         .onAppear { load() }
+    }
+
+    private func addDomain() {
+        let domain = newDomain.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !domain.isEmpty else { return }
+        guard !blocked.contains(domain) else {
+            statusMsg = "\(domain) is already blocked."
+            return
+        }
+        let ok = HostsManager.block(domain)
+        statusMsg = ok ? "Blocked \(domain)." : "Failed to block \(domain) — check admin permissions."
+        if ok { newDomain = "" }
+        load()
     }
 
     private func load() {

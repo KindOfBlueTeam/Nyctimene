@@ -46,13 +46,22 @@ struct MainView: View {
     // MARK: - Header / tab bar
 
     private var header: some View {
-        HStack(spacing: 0) {
-            // Logo (text version — name is part of the image)
-            if let img = Bundle.module.image(forResource: "Nyctimene_text") {
-                Image(nsImage: img)
+        HStack(spacing: 12) {
+            // Square owl logo
+            if let owl = Bundle.module.image(forResource: "Nyctimene_logo") {
+                Image(nsImage: owl)
                     .resizable()
                     .scaledToFit()
-                    .frame(height: 30)
+                    .frame(width: 60, height: 60)
+            }
+
+            // Text banner — screen blend removes solid black background
+            if let banner = Bundle.module.image(forResource: "Nyctimene-banner") {
+                Image(nsImage: banner)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 52)
+                    .blendMode(.screen)
             }
 
             Spacer()
@@ -67,7 +76,7 @@ struct MainView: View {
             .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         }
         .padding(.horizontal, 20)
-        .padding(.top, 48)   // titlebar clearance
+        .padding(.top, 14)
         .padding(.bottom, 10)
     }
 

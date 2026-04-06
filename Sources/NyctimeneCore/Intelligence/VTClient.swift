@@ -18,30 +18,33 @@ public class VTClient {
         guard let key = KeychainHelper.load(for: .virusTotal), !key.isEmpty else {
             throw IntelError.missingAPIKey("VirusTotal")
         }
+        let settings = SettingsStore.shared.settings
+        let suspT = settings.vtSuspiciousThreshold
+        let malT  = settings.vtMaliciousThreshold
         switch artifact.type {
-        case .domain:                       return try await lookupDomain(artifact.normalized, key: key)
-        case .ip:                           return try await lookupIP(artifact.normalized, key: key)
-        case .url:                          return try await lookupURL(artifact.normalized, key: key)
-        case .md5, .sha1, .sha256, .sha512: return try await lookupFile(artifact.normalized, key: key)
+        case .domain:                       return try await lookupDomain(artifact.normalized, key: key, suspT: suspT, malT: malT)
+        case .ip:                           return try await lookupIP(artifact.normalized, key: key, suspT: suspT, malT: malT)
+        case .url:                          return try await lookupURL(artifact.normalized, key: key, suspT: suspT, malT: malT)
+        case .md5, .sha1, .sha256, .sha512: return try await lookupFile(artifact.normalized, key: key, suspT: suspT, malT: malT)
         }
     }
 
     // MARK: - Private lookup methods
 
-    private func lookupDomain(_ domain: String, key: String) async throws -> VTProviderResult {
+    private func lookupDomain(_ domain: String, key: String, suspT: Int, malT: Int) async throws -> VTProviderResult {
         let url = URL(string: "\(base)/domains/\(domain)")!
         let data = try await fetch(url, key: key)
-        return try parseAnalysis(data, reportURL: "https://www.virustotal.com/gui/domain/\(domain)")
+        return try parseAnalysis(data, reportURL: "https://www.virustotal.com/gui/domain/\(domain)", suspT: suspT, malT: malT)
     }
 
-    private func lookupIP(_ ip: String, key: String) async throws -> VTProviderResult {
+    private func lookupIP(_ ip: String, key: String, suspT: Int, malT: Int) async throws -> VTProviderResult {
         let encoded = ip.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ip
         let url = URL(string: "\(base)/ip_addresses/\(encoded)")!
         let data = try await fetch(url, key: key)
-        return try parseAnalysis(data, reportURL: "https://www.virustotal.com/gui/ip-address/\(ip)")
+        return try parseAnalysis(data, reportURL: "https://www.virustotal.com/gui/ip-address/\(ip)", suspT: suspT, malT: malT)
     }
 
-    private func lookupURL(_ rawURL: String, key: String) async throws -> VTProviderResult {
+    private func lookupURL(_ rawURL: String, key: String, suspT: Int, malT: Int) async throws -> VTProviderResult {
         let b64 = Data(rawURL.utf8)
             .base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
@@ -52,10 +55,10 @@ public class VTClient {
         let encoded = Data(rawURL.utf8)
             .base64EncodedString()
             .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        return try parseAnalysis(data, reportURL: "https://www.virustotal.com/gui/url/\(encoded)")
+        return try parseAnalysis(data, reportURL: "https://www.virustotal.com/gui/url/\(encoded)", suspT: suspT, malT: malT)
     }
 
-    private func lookupFile(_ hash: String, key: String) async throws -> VTProviderResult {
+    private func lookupFile(_ hash: String, key: String, suspT: Int, malT: Int) async throws -> VTProviderResult {
         let url  = URL(string: "\(base)/files/\(hash)")!
         let data = try await fetch(url, key: key)
 
@@ -72,6 +75,8 @@ public class VTClient {
             score:    malicious + suspicious,
             total:    total,
             reportURL: "https://www.virustotal.com/gui/file/\(hash)",
+            suspiciousThreshold: suspT,
+            maliciousThreshold:  malT,
             fileName: attrs["meaningful_name"] as? String,
             fileType: attrs["type_description"] as? String,
             fileSize: attrs["size"]             as? Int
@@ -80,7 +85,7 @@ public class VTClient {
 
     // MARK: - Shared parse / fetch
 
-    private func parseAnalysis(_ data: Data, reportURL: String) throws -> VTProviderResult {
+    private func parseAnalysis(_ data: Data, reportURL: String, suspT: Int, malT: Int) throws -> VTProviderResult {
         guard let json  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let attrs = (json["data"] as? [String: Any])?["attributes"] as? [String: Any],
               let stats = attrs["last_analysis_stats"] as? [String: Any]
@@ -89,7 +94,8 @@ public class VTClient {
         let malicious  = stats["malicious"]  as? Int ?? 0
         let suspicious = stats["suspicious"] as? Int ?? 0
         let total      = (stats.values.compactMap { $0 as? Int }).reduce(0, +)
-        return VTProviderResult(score: malicious + suspicious, total: total, reportURL: reportURL)
+        return VTProviderResult(score: malicious + suspicious, total: total, reportURL: reportURL,
+                                suspiciousThreshold: suspT, maliciousThreshold: malT)
     }
 
     private func fetch(_ url: URL, key: String) async throws -> Data {

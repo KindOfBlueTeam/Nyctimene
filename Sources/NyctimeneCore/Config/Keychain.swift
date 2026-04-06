@@ -1,9 +1,11 @@
 import Foundation
 import Security
 
-/// Stores API keys for all threat intelligence providers in the macOS Keychain.
+/// Stores all provider API keys in a single consolidated Keychain item as a JSON dictionary.
+/// One item = one password prompt. "Always Allow" then persists for the life of that binary.
 public enum KeychainHelper {
-    private static let service = "com.nyctimene"
+    private static let service             = "com.nyctimene"
+    private static let consolidatedAccount = "nyctimene_api_keys"
 
     public enum Provider: String, CaseIterable {
         case virusTotal = "virustotal_api_key"
@@ -11,6 +13,7 @@ public enum KeychainHelper {
         case shodan     = "shodan_api_key"
         case urlScan    = "urlscan_api_key"
         case ipInfo     = "ipinfo_api_key"
+        case abuseCh    = "abusech_api_key"
 
         public var displayName: String {
             switch self {
@@ -19,77 +22,142 @@ public enum KeychainHelper {
             case .shodan:     return "Shodan"
             case .urlScan:    return "URLScan.io"
             case .ipInfo:     return "IPInfo.io"
+            case .abuseCh:    return "abuse.ch"
             }
         }
     }
 
+    // MARK: - Public interface
+
     @discardableResult
-    public static func save(_ key: String, for provider: Provider) -> Bool {
-        let data = Data(key.utf8)
-
-        // Delete any existing item first.  Delete does not require ACL
-        // authorization, so this works even if the old item has a restrictive ACL.
-        let deleteQuery: [CFString: Any] = [
-            kSecClass:       kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: provider.rawValue,
-        ]
-        SecItemDelete(deleteQuery as CFDictionary)
-
-        // Create an access object with an *empty* trusted-application list.
-        // An empty array (distinct from nil) tells the Security framework to
-        // grant access to every application without a confirmation dialog.
-        // This prevents the "Allow/Deny" prompt that appears on each new build
-        // because ad-hoc code signatures change with every recompile.
-        //
-        // SecAccessCreate is deprecated since macOS 10.10, but no modern API
-        // provides equivalent "allow any app without prompting" semantics.
-        // The wrapper below is itself marked deprecated so the compiler suppresses
-        // the warning at the call site rather than surfacing it on every build.
-        let access = makeOpenAccess(description: "Nyctimene \(provider.displayName) API Key")
-
-        var addQuery: [CFString: Any] = [
-            kSecClass:            kSecClassGenericPassword,
-            kSecAttrService:      service,
-            kSecAttrAccount:      provider.rawValue,
-            kSecValueData:        data,
-            kSecAttrAccessible:   kSecAttrAccessibleAfterFirstUnlock,
-        ]
-        if let access { addQuery[kSecAttrAccess] = access }
-
-        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+    public static func save(_ value: String, for provider: Provider) -> Bool {
+        var all = loadAll()
+        if value.isEmpty {
+            all.removeValue(forKey: provider.rawValue)
+        } else {
+            all[provider.rawValue] = value
+        }
+        return saveAll(all)
     }
 
     public static func load(for provider: Provider) -> String? {
-        let query: [CFString: Any] = [
-            kSecClass:        kSecClassGenericPassword,
-            kSecAttrService:  service,
-            kSecAttrAccount:  provider.rawValue,
-            kSecReturnData:   true,
-            kSecMatchLimit:   kSecMatchLimitOne
-        ]
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    // Marked deprecated so the compiler does not surface the SecAccessCreate
-    // deprecation warning at every call site.  The API has no modern replacement
-    // for the "grant access to all applications" ACL semantics we need here.
-    @available(macOS, deprecated: 10.10)
-    private static func makeOpenAccess(description: String) -> SecAccess? {
-        var access: SecAccess?
-        SecAccessCreate(description as CFString, [] as CFArray, &access)
-        return access
+        loadAll()[provider.rawValue]
     }
 
     public static func delete(for provider: Provider) {
+        var all = loadAll()
+        all.removeValue(forKey: provider.rawValue)
+        saveAll(all)
+    }
+
+    // MARK: - Consolidated read/write
+
+    private static func loadAll() -> [String: String] {
+        // Try the consolidated item first.
+        if let dict = readConsolidated() { return dict }
+
+        // One-time migration: pull any legacy per-provider items into the consolidated item,
+        // then delete the old ones so they no longer trigger individual Keychain prompts.
+        let legacy = readLegacyItems()
+        if !legacy.isEmpty {
+            saveAll(legacy)
+            deleteLegacyItems()
+            return legacy
+        }
+        return [:]
+    }
+
+    private static func readConsolidated() -> [String: String]? {
         let query: [CFString: Any] = [
             kSecClass:       kSecClassGenericPassword,
             kSecAttrService: service,
-            kSecAttrAccount: provider.rawValue
+            kSecAttrAccount: consolidatedAccount,
+            kSecReturnData:  true,
+            kSecMatchLimit:  kSecMatchLimitOne,
         ]
-        SecItemDelete(query as CFDictionary)
+        var item: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+        else { return nil }
+        return dict
+    }
+
+    @discardableResult
+    private static func saveAll(_ keys: [String: String]) -> Bool {
+        guard let data = try? JSONSerialization.data(withJSONObject: keys) else { return false }
+
+        // Always delete first — a fresh write gets a fresh ACL.
+        let deleteQuery: [CFString: Any] = [
+            kSecClass:       kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: consolidatedAccount,
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        let access = makeOpenAccess(description: "Nyctimene API Keys")
+        var addQuery: [CFString: Any] = [
+            kSecClass:          kSecClassGenericPassword,
+            kSecAttrService:    service,
+            kSecAttrAccount:    consolidatedAccount,
+            kSecValueData:      data,
+            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        if let access { addQuery[kSecAttrAccess] = access }
+        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+    }
+
+    // MARK: - Legacy migration helpers
+
+    /// Reads any pre-consolidation per-provider Keychain items (may trigger old prompts once).
+    private static func readLegacyItems() -> [String: String] {
+        var result: [String: String] = [:]
+        for provider in Provider.allCases {
+            let query: [CFString: Any] = [
+                kSecClass:       kSecClassGenericPassword,
+                kSecAttrService: service,
+                kSecAttrAccount: provider.rawValue,
+                kSecReturnData:  true,
+                kSecMatchLimit:  kSecMatchLimitOne,
+            ]
+            var item: AnyObject?
+            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+                  let data = item as? Data,
+                  let str  = String(data: data, encoding: .utf8),
+                  !str.isEmpty
+            else { continue }
+            result[provider.rawValue] = str
+        }
+        return result
+    }
+
+    private static func deleteLegacyItems() {
+        for provider in Provider.allCases {
+            let q: [CFString: Any] = [
+                kSecClass:       kSecClassGenericPassword,
+                kSecAttrService: service,
+                kSecAttrAccount: provider.rawValue,
+            ]
+            SecItemDelete(q as CFDictionary)
+        }
+    }
+
+    // MARK: - Access control
+
+    // SecAccessCreate is deprecated since macOS 10.10, but remains the only API that lets
+    // us specify "allow any application to read this item without a confirmation dialog."
+    //
+    // The trustedApplications parameter:
+    //   nil → only the calling application is trusted; all others show a dialog.
+    //   []  → no applications trusted → dialog appears on EVERY access (the old bug).
+    //
+    // By passing nil here and letting the user click "Always Allow" once, macOS records
+    // the calling binary's hash in the ACL. Subsequent launches of the same binary skip
+    // the dialog entirely. Re-installing the app (new binary hash) triggers one prompt.
+    @available(macOS, deprecated: 10.10)
+    private static func makeOpenAccess(description: String) -> SecAccess? {
+        var access: SecAccess?
+        SecAccessCreate(description as CFString, nil, &access)
+        return access
     }
 }

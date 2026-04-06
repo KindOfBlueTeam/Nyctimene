@@ -10,9 +10,10 @@ public struct IOCFeed: Codable, Identifiable {
 
     /// Pre-populated feeds shown on first launch. Users can delete any of these.
     public static let defaults: [IOCFeed] = [
-        IOCFeed(name: "Bitdefender",   urlString: "https://github.com/bitdefender/malware-ioc"),
-        IOCFeed(name: "GitHubInfoSec", urlString: "https://github.com/GithubInfosec/latest-malware-IoC"),
-        IOCFeed(name: "Bert-JanP",     urlString: "https://github.com/Bert-JanP/Open-Source-Threat-Intel-Feeds"),
+        IOCFeed(name: "GreyNoise",      urlString: "https://viz.greynoise.io/query/last_seen:1d%20classification:%22malicious%22"),
+        IOCFeed(name: "URLhaus",        urlString: "https://urlhaus.abuse.ch/browse/"),
+        IOCFeed(name: "ThreatFox",      urlString: "https://threatfox.abuse.ch/browse/"),
+        IOCFeed(name: "MalwareBazaar",  urlString: "https://bazaar.abuse.ch/browse/"),
     ]
 }
 
@@ -22,10 +23,15 @@ public struct AppSettings: Codable {
     public var shodanEnabled:        Bool
     public var urlScanEnabled:       Bool
     public var ipInfoEnabled:        Bool
+    public var abuseChEnabled:       Bool
     public var appearanceMode:       String   // "system" | "light" | "dark"
     public var transparencyEnabled:  Bool
     public var iocFeeds:             [IOCFeed]
     public var hasSeededDefaultFeeds: Bool
+    /// Minimum VT detection count to classify as Suspicious (default 1)
+    public var vtSuspiciousThreshold: Int
+    /// Minimum VT detection count to classify as Malicious (default 3); always > vtSuspiciousThreshold
+    public var vtMaliciousThreshold:  Int
 
     public static var `default`: AppSettings {
         AppSettings(
@@ -34,11 +40,50 @@ public struct AppSettings: Codable {
             shodanEnabled:        true,
             urlScanEnabled:       true,
             ipInfoEnabled:        true,
+            abuseChEnabled:       true,
             appearanceMode:       "system",
             transparencyEnabled:  false,
             iocFeeds:             [],
-            hasSeededDefaultFeeds: false
+            hasSeededDefaultFeeds: false,
+            vtSuspiciousThreshold: 1,
+            vtMaliciousThreshold:  3
         )
+    }
+
+    // Custom decoder so existing settings files without threshold keys load cleanly.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        virusTotalEnabled    = try c.decode(Bool.self,   forKey: .virusTotalEnabled)
+        otxEnabled           = try c.decode(Bool.self,   forKey: .otxEnabled)
+        shodanEnabled        = try c.decode(Bool.self,   forKey: .shodanEnabled)
+        urlScanEnabled       = try c.decode(Bool.self,   forKey: .urlScanEnabled)
+        ipInfoEnabled        = try c.decodeIfPresent(Bool.self,   forKey: .ipInfoEnabled) ?? true
+        abuseChEnabled       = try c.decodeIfPresent(Bool.self,   forKey: .abuseChEnabled) ?? true
+        appearanceMode       = try c.decode(String.self, forKey: .appearanceMode)
+        transparencyEnabled  = try c.decode(Bool.self,   forKey: .transparencyEnabled)
+        iocFeeds             = try c.decodeIfPresent([IOCFeed].self, forKey: .iocFeeds) ?? []
+        hasSeededDefaultFeeds = try c.decodeIfPresent(Bool.self, forKey: .hasSeededDefaultFeeds) ?? false
+        vtSuspiciousThreshold = try c.decodeIfPresent(Int.self, forKey: .vtSuspiciousThreshold) ?? 1
+        vtMaliciousThreshold  = try c.decodeIfPresent(Int.self, forKey: .vtMaliciousThreshold)  ?? 3
+    }
+
+    public init(virusTotalEnabled: Bool, otxEnabled: Bool, shodanEnabled: Bool,
+                urlScanEnabled: Bool, ipInfoEnabled: Bool, abuseChEnabled: Bool,
+                appearanceMode: String, transparencyEnabled: Bool,
+                iocFeeds: [IOCFeed], hasSeededDefaultFeeds: Bool,
+                vtSuspiciousThreshold: Int = 1, vtMaliciousThreshold: Int = 3) {
+        self.virusTotalEnabled    = virusTotalEnabled
+        self.otxEnabled           = otxEnabled
+        self.shodanEnabled        = shodanEnabled
+        self.urlScanEnabled       = urlScanEnabled
+        self.ipInfoEnabled        = ipInfoEnabled
+        self.abuseChEnabled       = abuseChEnabled
+        self.appearanceMode       = appearanceMode
+        self.transparencyEnabled  = transparencyEnabled
+        self.iocFeeds             = iocFeeds
+        self.hasSeededDefaultFeeds = hasSeededDefaultFeeds
+        self.vtSuspiciousThreshold = vtSuspiciousThreshold
+        self.vtMaliciousThreshold  = vtMaliciousThreshold
     }
 }
 

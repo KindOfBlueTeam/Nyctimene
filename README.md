@@ -11,24 +11,78 @@ Nyctimene is a macOS menubar tool for quickly looking up IP addresses, domains, 
 | Capability | Detail |
 |---|---|
 | **Manual lookup** | Paste any IP, domain, URL, or hash (MD5/SHA1/SHA256/SHA512) and get results in seconds |
+| **Risk Radar** | Interactive multi-source visualization — adapts between radar chart, XY scatter, and single-source gauge based on how many sources you select |
+| **Nyctimene Risk Score** | Composite 1–100 score derived from VirusTotal, MalwareBazaar, ThreatFox, and URLhaus — weighted by source count and confirmation level |
 | **Scan current connections** | Enumerates live sockets via `lsof` and runs every external IP through all enabled providers |
 | **PCAP analysis** | Open an existing `.pcap` file or start a live capture; all IPs and DNS names are extracted and analysed automatically |
 | **Domain registration** | RDAP lookup shows registrar, registration date, expiry, and status for any domain |
 | **IP ownership** | IPInfo.io enrichment shows ASN and company name — catches "malicious" alerts that are actually Apple, Cloudflare, etc. |
+| **Configurable VT thresholds** | Set your own detection count thresholds for Suspicious vs Malicious in Settings → Scoring |
+| **Stop analysis** | Cancel in-flight queries at any time without blocking the UI (Escape key) |
 | **Domain blocking** | One-click `/etc/hosts` block and unblock, with a managed list in Settings |
-| **IOC feed manager** | Add any URL-based threat intel feed; three community feeds are pre-loaded |
+| **IOC feed manager** | Add any URL-based threat intel feed; community feeds for GreyNoise, URLhaus, ThreatFox, and MalwareBazaar are pre-loaded |
 | **Screenshot export** | Saves a full-results PNG with case name, actor name, and notes — defanged filename included |
 | **Investigation context** | Case name, actor name, and freeform notes fields travel with every result |
 
-**Providers**
+---
 
-| Provider | What it reports | Artifact types |
-|---|---|---|
-| [VirusTotal](https://www.virustotal.com) | Detection count across ~90 AV engines | IP, domain, URL, hash |
-| [OTX AlienVault](https://otx.alienvault.com) | Threat pulse count from the community | IP, domain, URL, hash |
-| [Shodan](https://shodan.io) | Open ports and known CVEs *(exposure, not risk signal)* | IP |
-| [URLScan.io](https://urlscan.io) | Scan history and malicious verdicts | Domain, URL |
-| [IPInfo.io](https://ipinfo.io) | ASN and company ownership *(context only)* | IP |
+### Providers
+
+| Provider | What it reports | Artifact types | Risk signal |
+|---|---|---|---|
+| [VirusTotal](https://www.virustotal.com) | Detection count across ~90 AV engines | IP, domain, URL, hash | ✅ Scored |
+| [MalwareBazaar](https://bazaar.abuse.ch) | Confirmed malware sample database | Hash (MD5/SHA1/SHA256) | ✅ Scored |
+| [ThreatFox](https://threatfox.abuse.ch) | C2 infrastructure and payload IOCs | IP, domain, URL, hash | ✅ Scored |
+| [URLhaus](https://urlhaus.abuse.ch) | Active malware distribution URLs | IP, domain, URL, MD5/SHA256 | ✅ Scored |
+| [OTX AlienVault](https://otx.alienvault.com) | Threat pulse count from the community | IP, domain, URL, hash | Context only |
+| [URLScan.io](https://urlscan.io) | Scan history and malicious verdicts | Domain, URL | Context only |
+| [Shodan](https://shodan.io) | Open ports and known CVEs | IP | Context only |
+| [IPInfo.io](https://ipinfo.io) | ASN and company ownership | IP | Context only |
+
+MalwareBazaar, ThreatFox, and URLhaus share a single **abuse.ch** API key.
+
+---
+
+## Risk Radar
+
+The **Risk Radar** is the central visualization in every lookup result. It sits in the right panel alongside the provider cards.
+
+### How the score is calculated
+
+Each of the four *scored* sources (VT, MalwareBazaar, ThreatFox, URLhaus) maps to a level on a 1–5 scale:
+
+| Level | Meaning |
+|---|---|
+| 1 | Not queried / N/A for this artifact type |
+| 2 | Clean — no signal |
+| 3 | Low signal |
+| 4 | Likely malicious |
+| 5 | Confirmed malicious |
+
+The composite **1–100 score** is:
+
+```
+normalized  = (sum_of_levels - 2N) / (3N)
+multiplier  = N / N_total            # N = applicable sources, N_total = 4
+score       = normalized × multiplier × 99 + 1
+```
+
+- All sources clean → score near 1
+- All sources confirmed malicious → score near 100
+- Sources with no data (level 1) reduce the ceiling — more confirming sources are required to reach 100
+
+### Visualization modes
+
+Select which sources to display using the checkboxes below the chart. The visualization adapts automatically:
+
+| Sources selected | Mode |
+|---|---|
+| 3 or more | Radar chart — polygon shape adapts to the number of sources |
+| 2 | XY scatter — one source on each axis; the risk badge floats at the intersection |
+| 1 | Arc gauge — shows raw level (0–4) and source detail |
+| 0 | Prompt to select a source |
+
+The **center badge** — a hexagon stroked in the risk accent color (red / orange / green) containing the composite score — is present in radar and XY modes. Sources that returned no data for the current artifact type appear with a grey dot and do not affect the chart shape.
 
 ---
 
@@ -70,21 +124,20 @@ This produces `Nyctimene.app` in the project root. Drag it to `/Applications` (o
 
 Open the menubar icon → **Settings** → **Providers**. Each provider has a toggle and an API key field.
 
-Keys are stored in the macOS Keychain under the service identifier `com.nyctimene`. They are never sent anywhere except the provider's own API endpoint.
+Keys are stored in the macOS Keychain under the service identifier `com.nyctimene`, consolidated into a single item so you are prompted at most once after installation.
 
 ### Where to get each key
 
 | Provider | Free tier | Sign-up link |
 |---|---|---|
 | **VirusTotal** | 500 lookups/day, 4/min | https://www.virustotal.com/gui/join-us |
-| **OTX AlienVault** | Unlimited | https://otx.alienvault.com (register, then: API → Copy Key) |
+| **OTX AlienVault** | Unlimited | https://otx.alienvault.com (register → API → Copy Key) |
 | **Shodan** | Limited free search | https://account.shodan.io/register |
 | **URLScan.io** | 1,000 lookups/day | https://urlscan.io/user/signup |
 | **IPInfo.io** | 50,000 lookups/month | https://ipinfo.io/signup |
+| **abuse.ch** *(MalwareBazaar + ThreatFox + URLhaus)* | Free | https://auth.abuse.ch — one key covers all three services |
 
-All five are optional. Nyctimene will silently skip any provider whose key is not configured.
-
-> **After updating:** If you previously installed an older version of Nyctimene, re-save each API key once in Settings. This re-writes the Keychain item with an updated access policy and prevents repeated "Allow access?" dialogs on every launch.
+All providers are optional. Nyctimene silently skips any provider whose key is not configured.
 
 ---
 
@@ -95,7 +148,9 @@ All five are optional. Nyctimene will silently skip any provider whose key is no
 1. Click the owl icon in the menubar → **Analyze**
 2. Optionally fill in **Case** and **Actor** fields for investigation tracking
 3. Paste an IP address, domain, URL, or file hash into the search bar and press **Return**
-4. Results from all enabled providers appear in parallel. The overall risk badge in the header reflects only the threat intelligence providers (VT, OTX, URLScan) — Shodan results are shown in purple as exposure context and do not affect the risk level.
+4. Results from all enabled providers appear in parallel
+5. The **Risk Radar** on the right shows the composite score and per-source risk levels
+6. Press **Stop** (or Escape) at any time to cancel in-flight queries
 
 **Supported input formats**
 
@@ -108,6 +163,15 @@ All five are optional. Nyctimene will silently skip any provider whose key is no
 | SHA1 hash | `da39a3ee5e6b4b0d3255bfef95601890afd80709` |
 | SHA256 hash | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 | SHA512 hash | *(128 hex characters)* |
+
+### Configuring VirusTotal Thresholds
+
+Go to **Settings → Scoring** to set the detection count thresholds:
+
+- **Suspicious** — minimum VT hits to flag as suspicious (default: 1)
+- **Malicious** — minimum VT hits to flag as malicious (default: 3); always at least 1 higher than suspicious
+
+This is useful when infrastructure IPs are being over-flagged by noisy AV engines with 1–2 detections.
 
 ### Scan Current Connections
 
@@ -142,20 +206,20 @@ The **Feeds** tab lets you maintain a list of external threat intel feed URLs fo
 
 | Name | URL |
 |---|---|
-| Bitdefender | https://github.com/bitdefender/malware-ioc |
-| GitHubInfoSec | https://github.com/GithubInfosec/latest-malware-IoC |
-| Bert-JanP | https://github.com/Bert-JanP/Open-Source-Threat-Intel-Feeds |
+| GreyNoise | https://viz.greynoise.io/query/last_seen:1d classification:"malicious" |
+| URLhaus | https://urlhaus.abuse.ch/browse/ |
+| ThreatFox | https://threatfox.abuse.ch/browse/ |
+| MalwareBazaar | https://bazaar.abuse.ch/browse/ |
 
 **Adding a custom feed**
 
 1. Go to **Feeds** tab
-2. Click **+**
-3. Enter a name and the URL of the feed (GitHub repos, pastebin lists, or any direct URL are all fine)
-4. Click **Add** — the feed is saved immediately and persists across launches
+2. Enter a name and the URL of the feed directly in the add field
+3. Press **Add** — the feed is saved immediately and persists across launches
 
 **Removing a feed**
 
-Click the **×** button next to any feed. This removes it permanently (it will not be re-added on next launch).
+Select a feed and click the **−** button. This removes it permanently (it will not be re-added on next launch).
 
 ---
 
@@ -195,8 +259,8 @@ Nothing outside those locations is ever written by Nyctimene.
 ## Building from Source
 
 ```bash
-# Debug build (faster compile, more verbose output)
-./Scripts/build.sh debug
+# Debug build — fast iteration (kills existing instance, rebuilds, relaunches)
+./Scripts/dev.sh
 
 # Release build + assemble .app (default)
 ./Scripts/build.sh

@@ -2,11 +2,13 @@ import SwiftUI
 import NyctimeneCore
 
 struct LookupView: View {
-    @State private var input       = ""
-    @State private var isRunning   = false
+    @State private var input         = ""
+    @State private var isRunning     = false
     @State private var result: LookupResult?
     @State private var errorMsg: String?
     @State private var blockedDomains: Set<String> = []
+    @State private var analysisTask: Task<Void, Never>?
+    @State private var selectedSources: Set<String> = Set(Self.sourceOrder)
 
     // Investigation context
     @State private var caseName:  String = ""
@@ -81,15 +83,19 @@ struct LookupView: View {
         HStack(spacing: 10) {
             TextField("Domain, IP, URL, or hash — e.g. evil.com, 1.2.3.4, https://evil.com/path, d41d8cd…", text: $input)
                 .textFieldStyle(.roundedBorder)
-                .onSubmit { analyze() }
+                .onSubmit { if !isRunning { analyze() } }
                 .disabled(isRunning)
-
-            Button(isRunning ? "Analyzing…" : "Analyze") { analyze() }
-                .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || isRunning)
-                .keyboardShortcut(.return, modifiers: [])
 
             if isRunning {
                 ProgressView().scaleEffect(0.7)
+                Button("Stop") { stop() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .keyboardShortcut(.escape, modifiers: [])
+            } else {
+                Button("Analyze") { analyze() }
+                    .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .keyboardShortcut(.return, modifiers: [])
             }
         }
     }
@@ -134,43 +140,157 @@ struct LookupView: View {
     // MARK: - Results
 
     private func resultsView(_ r: LookupResult, forScreenshot: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Artifact header + risk badge + action buttons
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .center, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(r.artifact.normalized)
-                            .font(.title3.monospaced().bold())
-                        Text(r.artifact.type.rawValue.uppercased())
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    riskBadge(r.overallRisk)
-                    if !forScreenshot {
-                        blockButton(r)
-                        screenshotButton(r)
-                    }
-                }
+        HStack(alignment: .top, spacing: 16) {
 
-                if let info = r.domainInfo {
-                    domainInfoSection(info)
+            // ── LEFT: artifact header + provider cards ───────────────────
+            VStack(alignment: .leading, spacing: 16) {
+                // Artifact header
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .center) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(r.artifact.normalized)
+                                .font(.title3.monospaced().bold())
+                            Text(r.artifact.type.rawValue.uppercased())
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 8) {
+                            riskBadge(r.overallRisk)
+                            if !forScreenshot {
+                                blockButton(r)
+                                screenshotButton(r)
+                            }
+                        }
+                    }
+                    if let info = r.domainInfo   { domainInfoSection(info) }
+                    if let ip   = r.ipInfoResult { ipInfoSection(ip) }
                 }
-                if let ipInfo = r.ipInfoResult {
-                    ipInfoSection(ipInfo)
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.controlBackgroundColor)))
+
+                // Provider cards — 2-column grid
+                let cols = [GridItem(.flexible()), GridItem(.flexible())]
+                LazyVGrid(columns: cols, spacing: 12) {
+                    if let vt = r.vtResult            { vtCard(vt,  forScreenshot: forScreenshot) }
+                    if let otx = r.otxResult          { otxCard(otx, forScreenshot: forScreenshot) }
+                    if let sh = r.shodanResult        { shodanCard(sh, forScreenshot: forScreenshot) }
+                    if let us = r.urlScanResult       { urlScanCard(us, forScreenshot: forScreenshot) }
+                    if let mb = r.malwareBazaarResult { malwareBazaarCard(mb, forScreenshot: forScreenshot) }
+                    if let tf = r.threatFoxResult     { threatFoxCard(tf, forScreenshot: forScreenshot) }
+                    if let uh = r.urlhausResult       { urlhausCard(uh, forScreenshot: forScreenshot) }
                 }
             }
-            .padding(14)
+            .frame(maxWidth: .infinity)
+
+            // ── RIGHT: Risk Radar panel ───────────────────────────────────
+            VStack(spacing: 12) {
+                Text("RISK RADAR")
+                    .font(.caption.bold())
+                    .foregroundColor(.secondary)
+                    .tracking(1)
+
+                let allAxes  = radarAxes(for: r)
+                // level > 1 means the source was actually queried and returned data;
+                // N/A sources are excluded from the chart even if their checkbox is on
+                let shown    = allAxes.filter { selectedSources.contains($0.label) && $0.level > 1 }
+                let score    = radarScore(for: r)
+                let risk     = r.overallRisk
+
+                Group {
+                    switch shown.count {
+                    case 0:
+                        VStack(spacing: 8) {
+                            Image(systemName: "chart.xyaxis.line")
+                                .font(.system(size: 36))
+                                .foregroundColor(.secondary.opacity(0.3))
+                            Text("Select at least one source")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    case 1:
+                        SingleSourceRiskView(axis: shown[0])
+                    case 2:
+                        XYRiskView(axes: shown, score: score, riskLevel: risk)
+                    default:
+                        RadarChartView(axes: shown, score: score, riskLevel: risk)
+                    }
+                }
+                .frame(width: 280, height: 280)
+
+                // Source toggles
+                Divider()
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(Self.sourceOrder, id: \.self) { key in
+                        if let axis = allAxes.first(where: { $0.label == key }) {
+                            let hasData = axis.level > 1
+                            Toggle(isOn: sourceBinding(key)) {
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(levelDotColor(axis.level))
+                                        .frame(width: 7, height: 7)
+                                    Text(Self.sourceNames[key] ?? key)
+                                        .font(.caption)
+                                        .foregroundColor(hasData ? .primary : .secondary)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // Legend
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach([
+                        (Color.secondary.opacity(0.5), "Not queried / N/A"),
+                        (Color.green,  "Clean — no signal"),
+                        (Color.yellow, "Low signal"),
+                        (Color.orange, "Likely malicious"),
+                        (Color.red,    "Confirmed malicious"),
+                    ], id: \.1) { color, label in
+                        HStack(spacing: 6) {
+                            Circle().fill(color).frame(width: 7, height: 7)
+                            Text(label).font(.caption2).foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(16)
+            .frame(width: 340)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.controlBackgroundColor)))
+        }
+    }
 
-            // Provider cards — 2 × 2 grid
-            let cols = [GridItem(.flexible()), GridItem(.flexible())]
-            LazyVGrid(columns: cols, spacing: 12) {
-                if let vt = r.vtResult      { vtCard(vt,  forScreenshot: forScreenshot) }
-                if let otx = r.otxResult    { otxCard(otx, forScreenshot: forScreenshot) }
-                if let sh = r.shodanResult  { shodanCard(sh, forScreenshot: forScreenshot) }
-                if let us = r.urlScanResult { urlScanCard(us, forScreenshot: forScreenshot) }
-            }
+    // MARK: - Source selection helpers
+
+    static let sourceOrder = ["VT", "OTX", "Scan", "MB", "TFox", "UHaus"]
+    static let sourceNames: [String: String] = [
+        "VT":    "VirusTotal",
+        "OTX":   "OTX AlienVault",
+        "Scan":  "URLScan.io",
+        "MB":    "MalwareBazaar",
+        "TFox":  "ThreatFox",
+        "UHaus": "URLhaus",
+    ]
+
+    private func sourceBinding(_ key: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedSources.contains(key) },
+            set: { if $0 { selectedSources.insert(key) } else { selectedSources.remove(key) } }
+        )
+    }
+
+    private func levelDotColor(_ level: Int) -> Color {
+        switch level {
+        case 2:  return .green
+        case 3:  return .yellow
+        case 4:  return .orange
+        case 5:  return .red
+        default: return .secondary.opacity(0.4)
         }
     }
 
@@ -282,6 +402,45 @@ struct LookupView: View {
             statRow("Malicious",   "\(r.maliciousCount)")
             if let score = r.latestScore { statRow("Latest score", "\(score) / 100") }
             if !r.tags.isEmpty { statRow("Tags", r.tags.joined(separator: ", ")) }
+        }
+    }
+
+    private func malwareBazaarCard(_ r: MalwareBazaarResult, forScreenshot: Bool = false) -> some View {
+        providerCard(title: "MalwareBazaar", icon: "staroflife.fill",
+                     risk: r.riskLevel, reportURL: r.reportURL, forScreenshot: forScreenshot) {
+            statRow("Found", r.found ? "Yes" : "No")
+            if let family = r.malwareFamily { statRow("Family",    family) }
+            if let name   = r.fileName      { statRow("File name", name)   }
+            if let type   = r.fileType      { statRow("File type", type)   }
+            if let size   = r.fileSize {
+                statRow("File size", ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+            }
+            if let seen = r.firstSeen       { statRow("First seen", seen)  }
+            if !r.tags.isEmpty              { statRow("Tags", r.tags.joined(separator: ", ")) }
+        }
+    }
+
+    private func threatFoxCard(_ r: ThreatFoxResult, forScreenshot: Bool = false) -> some View {
+        providerCard(title: "ThreatFox", icon: "ant.fill",
+                     risk: r.riskLevel, reportURL: r.reportURL, forScreenshot: forScreenshot) {
+            statRow("Found", r.found ? "Yes" : "No")
+            if let family = r.malwareFamily { statRow("Malware",    family) }
+            if let type   = r.threatType    { statRow("Threat type", type)  }
+            if r.found { statRow("Confidence", "\(r.confidenceLevel)%") }
+            if let seen = r.firstSeen       { statRow("First seen",  seen)  }
+            if let last = r.lastSeen        { statRow("Last seen",   last)  }
+            if !r.tags.isEmpty              { statRow("Tags", r.tags.joined(separator: ", ")) }
+        }
+    }
+
+    private func urlhausCard(_ r: URLhausResult, forScreenshot: Bool = false) -> some View {
+        providerCard(title: "URLhaus", icon: "link.badge.plus",
+                     risk: r.riskLevel, reportURL: r.reportURL, forScreenshot: forScreenshot) {
+            statRow("Found", r.found ? "Yes" : "No")
+            if let status = r.urlStatus { statRow("Status",    status) }
+            if let threat = r.threat    { statRow("Threat",    threat) }
+            if r.found && r.urlCount > 0 { statRow("URL count", "\(r.urlCount)") }
+            if !r.tags.isEmpty           { statRow("Tags", r.tags.joined(separator: ", ")) }
         }
     }
 
@@ -485,12 +644,19 @@ struct LookupView: View {
         }
     }
 
-    // MARK: - Analyze
+    // MARK: - Analyze / Stop
+
+    private func stop() {
+        analysisTask?.cancel()
+        analysisTask = nil
+        isRunning    = false
+    }
 
     private func analyze() {
         let raw = input.trimmingCharacters(in: .whitespaces)
         guard !raw.isEmpty else { return }
 
+        analysisTask?.cancel()
         isRunning = true
         result    = nil
         errorMsg  = nil
@@ -498,7 +664,7 @@ struct LookupView: View {
         let artifact = ArtifactResolver.resolve(raw)
         let settings = SettingsStore.shared.settings
 
-        Task {
+        analysisTask = Task {
             var r = LookupResult(artifact: artifact)
             var errors: [String] = []
 
@@ -537,7 +703,28 @@ struct LookupView: View {
                         r.ipInfoResult = try? await IPInfoClient.shared.lookup(artifact)
                     }
                 }
+                if settings.abuseChEnabled {
+                    if artifact.type.isHash && artifact.type != .sha512 {
+                        group.addTask {
+                            do    { r.malwareBazaarResult = try await MalwareBazaarClient.shared.lookup(artifact) }
+                            catch { errors.append("MalwareBazaar: \(error.localizedDescription)") }
+                        }
+                    }
+                    group.addTask {
+                        do    { r.threatFoxResult = try await ThreatFoxClient.shared.lookup(artifact) }
+                        catch { errors.append("ThreatFox: \(error.localizedDescription)") }
+                    }
+                    if artifact.type != .sha1 && artifact.type != .sha512 {
+                        group.addTask {
+                            do    { r.urlhausResult = try await URLhausClient.shared.lookup(artifact) }
+                            catch { errors.append("URLhaus: \(error.localizedDescription)") }
+                        }
+                    }
+                }
             }
+
+            // Don't publish results if the user cancelled
+            guard !Task.isCancelled else { return }
 
             await MainActor.run {
                 if r.vtResult == nil && r.otxResult == nil && r.shodanResult == nil && r.urlScanResult == nil {
@@ -545,12 +732,107 @@ struct LookupView: View {
                 } else {
                     self.result = r
                 }
-                isRunning = false
+                isRunning    = false
+                analysisTask = nil
             }
         }
     }
 
     private func refreshBlockedList() {
         blockedDomains = Set(HostsManager.blockedDomains())
+    }
+
+    // MARK: - Radar chart
+
+    /// Builds the six radar axes from a completed LookupResult.
+    private func radarAxes(for r: LookupResult) -> [RadarAxis] {
+        let vt  = r.vtResult
+        let otx = r.otxResult
+        let us  = r.urlScanResult
+        let mb  = r.malwareBazaarResult
+        let tf  = r.threatFoxResult
+        let uh  = r.urlhausResult
+        return [
+            RadarAxis(label: "VT",    level: vtLevel(vt),
+                      rawDetail: vt.map { "\($0.score) / \($0.total) engines" }),
+            RadarAxis(label: "OTX",   level: otxLevel(otx),
+                      rawDetail: otx.map { "\($0.pulseCount) pulse\($0.pulseCount == 1 ? "" : "s")" }),
+            RadarAxis(label: "Scan",  level: urlScanLevel(us),
+                      rawDetail: us.map { "\($0.maliciousCount) malicious / \($0.scanCount) scans" }),
+            RadarAxis(label: "MB",    level: mbLevel(mb),
+                      rawDetail: mb.map { $0.found ? ($0.malwareFamily ?? "Found") : "Not found" }),
+            RadarAxis(label: "TFox",  level: tfLevel(tf),
+                      rawDetail: tf.map { $0.found ? "\($0.malwareFamily ?? $0.threatType ?? "Found") (\($0.confidenceLevel)%)" : "Not found" }),
+            RadarAxis(label: "UHaus", level: uhLevel(uh),
+                      rawDetail: uh.map { r in r.found ? (r.urlStatus ?? "Found") + (r.urlCount > 0 ? " · \(r.urlCount) URLs" : "") : "Not found" }),
+        ]
+    }
+
+    /// Composite 1–100 score derived from the four scored sources only.
+    /// Formula: normalized average × (applicable / total scored) × 99 + 1
+    /// More sources confirming → higher ceiling. All clean → 1. All confirmed → 100.
+    private func radarScore(for r: LookupResult) -> Int {
+        let levels = [
+            vtLevel(r.vtResult),
+            mbLevel(r.malwareBazaarResult),
+            tfLevel(r.threatFoxResult),
+            uhLevel(r.urlhausResult),
+        ]
+        let applicable = levels.filter { $0 > 1 }   // exclude N/A
+        guard !applicable.isEmpty else { return 1 }
+
+        let N         = applicable.count
+        let N_total   = 4                            // VT + MB + TF + UH
+        let sum       = applicable.reduce(0, +)
+        // Map: all at level 2 (clean) → 0.0 ; all at level 5 (confirmed) → 1.0
+        let normalized  = Double(sum - 2 * N) / Double(3 * N)
+        // Multiplier: more applicable sources = higher confidence ceiling
+        let multiplier  = Double(N) / Double(N_total)
+        return max(1, min(100, Int(normalized * multiplier * 99) + 1))
+    }
+
+    // MARK: - Level mappings (provider result → 1–5 scale)
+
+    private func vtLevel(_ r: VTProviderResult?) -> Int {
+        guard let r else { return 1 }
+        if r.score == 0               { return 2 }
+        if r.riskLevel == .suspicious { return 3 }
+        return r.score >= 10 ? 5 : 4
+    }
+
+    private func mbLevel(_ r: MalwareBazaarResult?) -> Int {
+        guard let r else { return 1 }
+        return r.found ? 5 : 2
+    }
+
+    private func tfLevel(_ r: ThreatFoxResult?) -> Int {
+        guard let r else { return 1 }
+        if !r.found                    { return 2 }
+        if r.confidenceLevel >= 75     { return 5 }
+        if r.confidenceLevel >= 50     { return 4 }
+        return 3
+    }
+
+    private func uhLevel(_ r: URLhausResult?) -> Int {
+        guard let r else { return 1 }
+        if !r.found                    { return 2 }
+        if r.urlStatus == "online"     { return 5 }
+        return r.urlCount > 3 ? 4 : 3
+    }
+
+    private func otxLevel(_ r: OTXProviderResult?) -> Int {
+        guard let r else { return 1 }
+        if r.pulseCount == 0           { return 2 }
+        if r.pulseCount <= 2           { return 3 }
+        if r.pulseCount <= 9           { return 4 }
+        return 5
+    }
+
+    private func urlScanLevel(_ r: URLScanProviderResult?) -> Int {
+        guard let r else { return 1 }
+        if r.maliciousCount > 0                        { return 5 }
+        if let s = r.latestScore, s > 50               { return 4 }
+        if let s = r.latestScore, s > 20               { return 3 }
+        return 2
     }
 }

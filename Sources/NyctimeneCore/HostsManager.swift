@@ -25,8 +25,12 @@ public enum HostsManager {
     /// Remove a domain from /etc/hosts.
     @discardableResult
     public static func unblock(_ domain: String) -> Bool {
-        // Delete any line containing the domain that was added by Nyctimene
-        let escaped = domain.replacingOccurrences(of: ".", with: "\\\\.")
+        // Escape sed regex special chars that can appear in domains (dots, brackets from defanged notation)
+        let escaped = domain
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: ".", with: "\\.")
+            .replacingOccurrences(of: "[", with: "\\[")
+            .replacingOccurrences(of: "]", with: "\\]")
         let script = """
             do shell script "sed -i '' '/0\\.0\\.0\\.0 \(escaped).*Nyctimene/d' /etc/hosts && dscacheutil -flushcache" with administrator privileges
         """

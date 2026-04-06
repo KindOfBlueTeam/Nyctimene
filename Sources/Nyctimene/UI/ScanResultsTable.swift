@@ -18,31 +18,47 @@ final class BulkAnalysisModel: ObservableObject {
         progress    = (0, rows.count)
 
         let settings  = SettingsStore.shared.settings
-        let snapshots = rows   // capture immutable list of (id, artifact)
+        let snapshots = rows
 
         await withTaskGroup(of: RowResult.self) { group in
             for row in snapshots {
                 let id       = row.id
                 let artifact = row.artifact
                 group.addTask {
-                    let vt     = settings.virusTotalEnabled ? (try? await VTClient.shared.lookup(artifact))      : nil
-                    let otx    = settings.otxEnabled        ? (try? await OTXClient.shared.lookup(artifact))     : nil
-                    let shodan = settings.shodanEnabled     ? (try? await ShodanClient.shared.lookup(artifact))  : nil
-                    let us     = settings.urlScanEnabled    ? (try? await URLScanClient.shared.lookup(artifact))  : nil
+                    let vt     = settings.virusTotalEnabled ? (try? await VTClient.shared.lookup(artifact))     : nil
+                    let otx    = settings.otxEnabled        ? (try? await OTXClient.shared.lookup(artifact))    : nil
+                    let shodan = settings.shodanEnabled     ? (try? await ShodanClient.shared.lookup(artifact)) : nil
+                    let us     = settings.urlScanEnabled    ? (try? await URLScanClient.shared.lookup(artifact)) : nil
                     let ipInfo = (settings.ipInfoEnabled && artifact.type == .ip)
                                     ? (try? await IPInfoClient.shared.lookup(artifact)) : nil
-                    return RowResult(id: id, vt: vt, otx: otx, shodan: shodan, urlScan: us, ipInfo: ipInfo)
+                    var mb: MalwareBazaarResult? = nil
+                    var tf: ThreatFoxResult?     = nil
+                    var uh: URLhausResult?        = nil
+                    if settings.abuseChEnabled {
+                        if artifact.type.isHash && artifact.type != .sha512 {
+                            mb = try? await MalwareBazaarClient.shared.lookup(artifact)
+                        }
+                        tf = try? await ThreatFoxClient.shared.lookup(artifact)
+                        if artifact.type != .sha1 && artifact.type != .sha512 {
+                            uh = try? await URLhausClient.shared.lookup(artifact)
+                        }
+                    }
+                    return RowResult(id: id, vt: vt, otx: otx, shodan: shodan,
+                                     urlScan: us, ipInfo: ipInfo, mb: mb, tf: tf, uh: uh)
                 }
             }
 
             for await result in group {
                 if let idx = rows.firstIndex(where: { $0.id == result.id }) {
-                    rows[idx].vtResult      = result.vt
-                    rows[idx].otxResult     = result.otx
-                    rows[idx].shodanResult  = result.shodan
-                    rows[idx].urlScanResult = result.urlScan
-                    rows[idx].ipInfoResult  = result.ipInfo
-                    rows[idx].isAnalyzed    = true
+                    rows[idx].vtResult            = result.vt
+                    rows[idx].otxResult           = result.otx
+                    rows[idx].shodanResult        = result.shodan
+                    rows[idx].urlScanResult       = result.urlScan
+                    rows[idx].ipInfoResult        = result.ipInfo
+                    rows[idx].malwareBazaarResult = result.mb
+                    rows[idx].threatFoxResult     = result.tf
+                    rows[idx].urlhausResult       = result.uh
+                    rows[idx].isAnalyzed          = true
                     progress.done += 1
                 }
             }
@@ -58,6 +74,9 @@ final class BulkAnalysisModel: ObservableObject {
         let shodan:  ShodanProviderResult?
         let urlScan: URLScanProviderResult?
         let ipInfo:  IPInfoProviderResult?
+        let mb:      MalwareBazaarResult?
+        let tf:      ThreatFoxResult?
+        let uh:      URLhausResult?
     }
 }
 
@@ -100,13 +119,16 @@ struct ScanResultsTable: View {
 
     private var headerRow: some View {
         HStack(spacing: 0) {
-            colLabel("Artifact",    flex: true)
-            if showProcess { colLabel("Process", width: 110) }
-            colLabel("Risk",        width: 84)
-            colLabel("VirusTotal",  width: 96)
-            colLabel("OTX",         width: 72)
-            colLabel("Shodan",      width: 80)
-            colLabel("URLScan",     width: 84)
+            colLabel("Artifact",     flex: true)
+            if showProcess { colLabel("Process", width: 100) }
+            colLabel("Risk",         width: 80)
+            colLabel("VirusTotal",   width: 88)
+            colLabel("OTX",          width: 64)
+            colLabel("Shodan",       width: 72)
+            colLabel("URLScan",      width: 72)
+            colLabel("MalBazaar",    width: 76)
+            colLabel("ThreatFox",    width: 76)
+            colLabel("URLhaus",      width: 68)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
@@ -122,13 +144,17 @@ struct ScanResultsTable: View {
 
     // MARK: - Data row
 
-    /// Returns the report URL of whichever provider returned the highest risk for this row.
+    /// Returns the report URL of the highest-risk scored provider for this row.
     private func topReportURL(_ row: ScanResultRow) -> URL? {
         let candidates: [(RiskLevel, String?)] = [
-            (row.vtResult?.riskLevel      ?? .unknown, row.vtResult?.reportURL),
-            (row.otxResult?.riskLevel     ?? .unknown, row.otxResult?.reportURL),
-            (row.shodanResult?.riskLevel  ?? .unknown, row.shodanResult?.reportURL),
-            (row.urlScanResult?.riskLevel ?? .unknown, row.urlScanResult?.reportURL),
+            (row.vtResult?.riskLevel            ?? .unknown, row.vtResult?.reportURL),
+            (row.malwareBazaarResult?.riskLevel ?? .unknown, row.malwareBazaarResult?.reportURL),
+            (row.threatFoxResult?.riskLevel     ?? .unknown, row.threatFoxResult?.reportURL),
+            (row.urlhausResult?.riskLevel       ?? .unknown, row.urlhausResult?.reportURL),
+            // Contextual providers as fallback when scored sources are clean
+            (row.otxResult?.riskLevel           ?? .unknown, row.otxResult?.reportURL),
+            (row.urlScanResult?.riskLevel       ?? .unknown, row.urlScanResult?.reportURL),
+            (row.shodanResult?.riskLevel        ?? .unknown, row.shodanResult?.reportURL),
         ]
         guard let urlStr = candidates
             .filter({ $0.0 > .unknown })
@@ -186,43 +212,70 @@ struct ScanResultsTable: View {
 
             // Risk badge
             riskBadge(row.overallRisk)
-                .frame(width: 84, alignment: .leading)
+                .frame(width: 80, alignment: .leading)
 
             // VirusTotal
             providerCell(
-                main:  row.vtResult.map     { "\($0.score) / \($0.total)" },
-                url:   row.vtResult?.reportURL,
-                risk:  row.vtResult?.riskLevel,
+                main:    row.vtResult.map { "\($0.score) / \($0.total)" },
+                url:     row.vtResult?.reportURL,
+                risk:    row.vtResult?.riskLevel,
                 pending: !row.isAnalyzed && row.vtResult == nil,
-                width: 96
+                width:   88
             )
 
             // OTX
             providerCell(
-                main:  row.otxResult.map    { "\($0.pulseCount) pulse\($0.pulseCount == 1 ? "" : "s")" },
-                url:   row.otxResult?.reportURL,
-                risk:  row.otxResult?.riskLevel,
+                main:    row.otxResult.map { "\($0.pulseCount) pulse\($0.pulseCount == 1 ? "" : "s")" },
+                url:     row.otxResult?.reportURL,
+                risk:    row.otxResult?.riskLevel,
                 pending: !row.isAnalyzed && row.otxResult == nil,
-                width: 72
+                width:   64
             )
 
-            // Shodan — exposure data only, shown in purple regardless of port/CVE count
+            // Shodan — exposure context, purple
             providerCell(
-                main:  row.shodanResult.map { $0.ports.isEmpty ? "no ports" : "\($0.ports.count) port\($0.ports.count == 1 ? "" : "s")" },
-                url:   row.shodanResult?.reportURL,
-                risk:  row.shodanResult?.riskLevel,
-                color: .purple,
+                main:    row.shodanResult.map { $0.ports.isEmpty ? "no ports" : "\($0.ports.count) port\($0.ports.count == 1 ? "" : "s")" },
+                url:     row.shodanResult?.reportURL,
+                risk:    row.shodanResult?.riskLevel,
+                color:   .purple,
                 pending: !row.isAnalyzed && row.shodanResult == nil,
-                width: 80
+                width:   72
             )
 
             // URLScan
             providerCell(
-                main:  row.urlScanResult.map { "\($0.scanCount) scan\($0.scanCount == 1 ? "" : "s")" },
-                url:   row.urlScanResult?.reportURL,
-                risk:  row.urlScanResult?.riskLevel,
+                main:    row.urlScanResult.map { "\($0.scanCount) scan\($0.scanCount == 1 ? "" : "s")" },
+                url:     row.urlScanResult?.reportURL,
+                risk:    row.urlScanResult?.riskLevel,
                 pending: !row.isAnalyzed && row.urlScanResult == nil,
-                width: 84
+                width:   72
+            )
+
+            // MalwareBazaar
+            providerCell(
+                main:    row.malwareBazaarResult.map { $0.found ? ($0.malwareFamily ?? "found") : "clean" },
+                url:     row.malwareBazaarResult?.reportURL,
+                risk:    row.malwareBazaarResult?.riskLevel,
+                pending: !row.isAnalyzed && row.malwareBazaarResult == nil && row.artifact.type.isHash && row.artifact.type != .sha512,
+                width:   76
+            )
+
+            // ThreatFox
+            providerCell(
+                main:    row.threatFoxResult.map { $0.found ? "\($0.confidenceLevel)% \($0.threatType ?? "")" : "clean" },
+                url:     row.threatFoxResult?.reportURL,
+                risk:    row.threatFoxResult?.riskLevel,
+                pending: !row.isAnalyzed && row.threatFoxResult == nil,
+                width:   76
+            )
+
+            // URLhaus
+            providerCell(
+                main:    row.urlhausResult.map { $0.found ? ($0.urlStatus ?? "found") + ($0.urlCount > 0 ? " (\($0.urlCount))" : "") : "clean" },
+                url:     row.urlhausResult?.reportURL,
+                risk:    row.urlhausResult?.riskLevel,
+                pending: !row.isAnalyzed && row.urlhausResult == nil && row.artifact.type != .sha1 && row.artifact.type != .sha512,
+                width:   68
             )
         }
         .padding(.horizontal, 12)
