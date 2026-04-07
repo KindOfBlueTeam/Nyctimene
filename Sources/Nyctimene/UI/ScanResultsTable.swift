@@ -12,59 +12,102 @@ final class BulkAnalysisModel: ObservableObject {
 
     var flaggedCount: Int { rows.filter { $0.overallRisk >= .suspicious }.count }
 
-    func analyze(artifacts: [(artifact: Artifact, process: String?)]) async {
-        rows        = artifacts.map { ScanResultRow(artifact: $0.artifact, process: $0.process) }
-        isAnalyzing = true
-        progress    = (0, rows.count)
+    /// Populate rows without running any analysis.
+    func populate(artifacts: [(artifact: Artifact, process: String?)]) {
+        rows = artifacts.map { ScanResultRow(artifact: $0.artifact, process: $0.process) }
+    }
 
-        let settings  = SettingsStore.shared.settings
-        let snapshots = rows
+    /// Analyze all un-analyzed rows.
+    func analyzeAll() async {
+        let toAnalyze = rows.filter { !$0.isAnalyzed }
+        guard !toAnalyze.isEmpty else { return }
+
+        isAnalyzing = true
+        progress    = (0, toAnalyze.count)
+
+        // Mark rows as querying
+        for row in toAnalyze {
+            if let idx = rows.firstIndex(where: { $0.id == row.id }) {
+                rows[idx].isQuerying = true
+            }
+        }
 
         await withTaskGroup(of: RowResult.self) { group in
-            for row in snapshots {
-                let id       = row.id
-                let artifact = row.artifact
-                group.addTask {
-                    let vt     = settings.virusTotalEnabled ? (try? await VTClient.shared.lookup(artifact))     : nil
-                    let otx    = settings.otxEnabled        ? (try? await OTXClient.shared.lookup(artifact))    : nil
-                    let shodan = settings.shodanEnabled     ? (try? await ShodanClient.shared.lookup(artifact)) : nil
-                    let us     = settings.urlScanEnabled    ? (try? await URLScanClient.shared.lookup(artifact)) : nil
-                    let ipInfo = (settings.ipInfoEnabled && artifact.type == .ip)
-                                    ? (try? await IPInfoClient.shared.lookup(artifact)) : nil
-                    var mb: MalwareBazaarResult? = nil
-                    var tf: ThreatFoxResult?     = nil
-                    var uh: URLhausResult?        = nil
-                    if settings.abuseChEnabled {
-                        if artifact.type.isHash && artifact.type != .sha512 {
-                            mb = try? await MalwareBazaarClient.shared.lookup(artifact)
-                        }
-                        tf = try? await ThreatFoxClient.shared.lookup(artifact)
-                        if artifact.type != .sha1 && artifact.type != .sha512 {
-                            uh = try? await URLhausClient.shared.lookup(artifact)
-                        }
-                    }
-                    return RowResult(id: id, vt: vt, otx: otx, shodan: shodan,
-                                     urlScan: us, ipInfo: ipInfo, mb: mb, tf: tf, uh: uh)
-                }
+            for row in toAnalyze {
+                group.addTask { await Self.queryRow(row) }
             }
-
             for await result in group {
-                if let idx = rows.firstIndex(where: { $0.id == result.id }) {
-                    rows[idx].vtResult            = result.vt
-                    rows[idx].otxResult           = result.otx
-                    rows[idx].shodanResult        = result.shodan
-                    rows[idx].urlScanResult       = result.urlScan
-                    rows[idx].ipInfoResult        = result.ipInfo
-                    rows[idx].malwareBazaarResult = result.mb
-                    rows[idx].threatFoxResult     = result.tf
-                    rows[idx].urlhausResult       = result.uh
-                    rows[idx].isAnalyzed          = true
-                    progress.done += 1
-                }
+                applyResult(result)
             }
         }
 
         isAnalyzing = false
+    }
+
+    /// Analyze a single row by ID.
+    func analyzeSingle(id: UUID) async {
+        guard let row = rows.first(where: { $0.id == id }), !row.isAnalyzed else { return }
+
+        if let idx = rows.firstIndex(where: { $0.id == id }) {
+            rows[idx].isQuerying = true
+        }
+
+        isAnalyzing = true
+        progress = (0, 1)
+
+        let result = await Self.queryRow(row)
+        applyResult(result)
+
+        isAnalyzing = false
+    }
+
+    /// Legacy entry point used by PCAP tab — populates + analyzes in one call.
+    func analyze(artifacts: [(artifact: Artifact, process: String?)]) async {
+        populate(artifacts: artifacts)
+        await analyzeAll()
+    }
+
+    // MARK: - Private
+
+    private func applyResult(_ result: RowResult) {
+        if let idx = rows.firstIndex(where: { $0.id == result.id }) {
+            rows[idx].vtResult            = result.vt
+            rows[idx].otxResult           = result.otx
+            rows[idx].shodanResult        = result.shodan
+            rows[idx].urlScanResult       = result.urlScan
+            rows[idx].ipInfoResult        = result.ipInfo
+            rows[idx].malwareBazaarResult = result.mb
+            rows[idx].threatFoxResult     = result.tf
+            rows[idx].urlhausResult       = result.uh
+            rows[idx].isAnalyzed          = true
+            rows[idx].isQuerying          = false
+            progress.done += 1
+        }
+    }
+
+    private static func queryRow(_ row: ScanResultRow) async -> RowResult {
+        let settings = SettingsStore.shared.settings
+        let artifact = row.artifact
+        let vt     = settings.virusTotalEnabled ? (try? await VTClient.shared.lookup(artifact))     : nil
+        let otx    = settings.otxEnabled        ? (try? await OTXClient.shared.lookup(artifact))    : nil
+        let shodan = settings.shodanEnabled     ? (try? await ShodanClient.shared.lookup(artifact)) : nil
+        let us     = settings.urlScanEnabled    ? (try? await URLScanClient.shared.lookup(artifact)) : nil
+        let ipInfo = (settings.ipInfoEnabled && artifact.type == .ip)
+                        ? (try? await IPInfoClient.shared.lookup(artifact)) : nil
+        var mb: MalwareBazaarResult? = nil
+        var tf: ThreatFoxResult?     = nil
+        var uh: URLhausResult?       = nil
+        if settings.abuseChEnabled {
+            if artifact.type.isHash && artifact.type != .sha512 {
+                mb = try? await MalwareBazaarClient.shared.lookup(artifact)
+            }
+            tf = try? await ThreatFoxClient.shared.lookup(artifact)
+            if artifact.type != .sha1 && artifact.type != .sha512 {
+                uh = try? await URLhausClient.shared.lookup(artifact)
+            }
+        }
+        return RowResult(id: row.id, vt: vt, otx: otx, shodan: shodan,
+                         urlScan: us, ipInfo: ipInfo, mb: mb, tf: tf, uh: uh)
     }
 
     private struct RowResult {
@@ -86,6 +129,7 @@ struct ScanResultsTable: View {
     let rows:        [ScanResultRow]
     let showProcess: Bool
     var riskyOnly:   Bool = false
+    var onQueryRow:  ((UUID) -> Void)? = nil
 
     private var displayed: [ScanResultRow] {
         let filtered = riskyOnly ? rows.filter { $0.overallRisk >= .suspicious } : rows
@@ -120,15 +164,15 @@ struct ScanResultsTable: View {
     private var headerRow: some View {
         HStack(spacing: 0) {
             colLabel("Artifact",     flex: true)
-            if showProcess { colLabel("Process", width: 100) }
-            colLabel("Risk",         width: 80)
-            colLabel("VirusTotal",   width: 88)
-            colLabel("OTX",          width: 64)
-            colLabel("Shodan",       width: 72)
-            colLabel("URLScan",      width: 72)
-            colLabel("MalBazaar",    width: 76)
-            colLabel("ThreatFox",    width: 76)
-            colLabel("URLhaus",      width: 68)
+            if showProcess { colLabel("Process", width: 80) }
+            colLabel("Risk",         width: 72)
+            colLabel("VT",           width: 56)
+            colLabel("OTX",          width: 50)
+            colLabel("Shodan",       width: 56)
+            colLabel("Scan",         width: 50)
+            colLabel("MB",           width: 50)
+            colLabel("TFox",         width: 50)
+            colLabel("UHaus",        width: 50)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
@@ -166,17 +210,29 @@ struct ScanResultsTable: View {
 
     private func dataRow(_ row: ScanResultRow) -> some View {
         HStack(spacing: 0) {
-            // Artifact — linked to the highest-risk provider's report when available
-            VStack(alignment: .leading, spacing: 1) {
-                if let dest = topReportURL(row) {
-                    Link(destination: dest) {
-                        Text(row.artifact.normalized)
-                            .font(.caption.monospaced())
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+            // Query pill + Artifact
+            HStack(spacing: 6) {
+                if let onQuery = onQueryRow, !row.isAnalyzed {
+                    Button { onQuery(row.id) } label: {
+                        Text("Query")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                            .foregroundColor(.accentColor)
                     }
-                } else {
-                    Text(row.artifact.normalized)
+                    .buttonStyle(.plain)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    if let dest = topReportURL(row) {
+                        Link(destination: dest) {
+                            Text(row.artifact.normalized)
+                                .font(.caption.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    } else {
+                        Text(row.artifact.normalized)
                         .font(.caption.monospaced())
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -198,6 +254,7 @@ struct ScanResultsTable: View {
                     }
                 }
             }
+            }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             // Process (optional)
@@ -207,75 +264,75 @@ struct ScanResultsTable: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .foregroundColor(.secondary)
-                    .frame(width: 110, alignment: .leading)
+                    .frame(width: 80, alignment: .leading)
             }
 
             // Risk badge
             riskBadge(row.overallRisk)
-                .frame(width: 80, alignment: .leading)
+                .frame(width: 72, alignment: .leading)
 
             // VirusTotal
             providerCell(
-                main:    row.vtResult.map { "\($0.score) / \($0.total)" },
+                main:    row.vtResult.map { "\($0.score)/\($0.total)" },
                 url:     row.vtResult?.reportURL,
                 risk:    row.vtResult?.riskLevel,
-                pending: !row.isAnalyzed && row.vtResult == nil,
-                width:   88
+                pending: row.isQuerying && row.vtResult == nil,
+                width:   56
             )
 
             // OTX
             providerCell(
-                main:    row.otxResult.map { "\($0.pulseCount) pulse\($0.pulseCount == 1 ? "" : "s")" },
+                main:    row.otxResult.map { "\($0.pulseCount)p" },
                 url:     row.otxResult?.reportURL,
                 risk:    row.otxResult?.riskLevel,
-                pending: !row.isAnalyzed && row.otxResult == nil,
-                width:   64
+                pending: row.isQuerying && row.otxResult == nil,
+                width:   50
             )
 
             // Shodan — exposure context, purple
             providerCell(
-                main:    row.shodanResult.map { $0.ports.isEmpty ? "no ports" : "\($0.ports.count) port\($0.ports.count == 1 ? "" : "s")" },
+                main:    row.shodanResult.map { $0.ports.isEmpty ? "—" : "\($0.ports.count)p" },
                 url:     row.shodanResult?.reportURL,
                 risk:    row.shodanResult?.riskLevel,
                 color:   .purple,
-                pending: !row.isAnalyzed && row.shodanResult == nil,
-                width:   72
+                pending: row.isQuerying && row.shodanResult == nil,
+                width:   56
             )
 
             // URLScan
             providerCell(
-                main:    row.urlScanResult.map { "\($0.scanCount) scan\($0.scanCount == 1 ? "" : "s")" },
+                main:    row.urlScanResult.map { "\($0.scanCount)s" },
                 url:     row.urlScanResult?.reportURL,
                 risk:    row.urlScanResult?.riskLevel,
-                pending: !row.isAnalyzed && row.urlScanResult == nil,
-                width:   72
+                pending: row.isQuerying && row.urlScanResult == nil,
+                width:   50
             )
 
             // MalwareBazaar
             providerCell(
-                main:    row.malwareBazaarResult.map { $0.found ? ($0.malwareFamily ?? "found") : "clean" },
+                main:    row.malwareBazaarResult.map { $0.found ? "hit" : "—" },
                 url:     row.malwareBazaarResult?.reportURL,
                 risk:    row.malwareBazaarResult?.riskLevel,
-                pending: !row.isAnalyzed && row.malwareBazaarResult == nil && row.artifact.type.isHash && row.artifact.type != .sha512,
-                width:   76
+                pending: row.isQuerying && row.malwareBazaarResult == nil && row.artifact.type.isHash && row.artifact.type != .sha512,
+                width:   50
             )
 
             // ThreatFox
             providerCell(
-                main:    row.threatFoxResult.map { $0.found ? "\($0.confidenceLevel)% \($0.threatType ?? "")" : "clean" },
+                main:    row.threatFoxResult.map { $0.found ? "\($0.confidenceLevel)%" : "—" },
                 url:     row.threatFoxResult?.reportURL,
                 risk:    row.threatFoxResult?.riskLevel,
-                pending: !row.isAnalyzed && row.threatFoxResult == nil,
-                width:   76
+                pending: row.isQuerying && row.threatFoxResult == nil,
+                width:   50
             )
 
             // URLhaus
             providerCell(
-                main:    row.urlhausResult.map { $0.found ? ($0.urlStatus ?? "found") + ($0.urlCount > 0 ? " (\($0.urlCount))" : "") : "clean" },
+                main:    row.urlhausResult.map { $0.found ? ($0.urlStatus ?? "hit") : "—" },
                 url:     row.urlhausResult?.reportURL,
                 risk:    row.urlhausResult?.riskLevel,
-                pending: !row.isAnalyzed && row.urlhausResult == nil && row.artifact.type != .sha1 && row.artifact.type != .sha512,
-                width:   68
+                pending: row.isQuerying && row.urlhausResult == nil && row.artifact.type != .sha1 && row.artifact.type != .sha512,
+                width:   50
             )
         }
         .padding(.horizontal, 12)

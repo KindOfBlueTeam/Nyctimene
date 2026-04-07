@@ -6,6 +6,7 @@ public struct ScanResultRow: Identifiable {
     public let artifact:    Artifact
     public var process:     String?             // populated by ConnectionScanner
     public var isAnalyzed:  Bool = false
+    public var isQuerying:  Bool = false
 
     public var vtResult:            VTProviderResult?
     public var otxResult:           OTXProviderResult?

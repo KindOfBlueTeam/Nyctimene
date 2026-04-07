@@ -84,7 +84,7 @@ struct LookupView: View {
     private var searchBar: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                TextField("Domain, IP, URL, or hash — e.g. evil.com, 1.2.3.4, https://evil.com/path, d41d8cd…", text: $input)
+                TextField("indicator", text: $input)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { if !isRunning { identifyIOC() } }
                     .onChange(of: input) { _ in

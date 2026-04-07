@@ -16,7 +16,14 @@ struct ConnectionScanView: View {
             if model.rows.isEmpty && !isScanning {
                 emptyState
             } else {
-                ScanResultsTable(rows: model.rows, showProcess: true, riskyOnly: riskyOnly)
+                ScanResultsTable(
+                    rows: model.rows,
+                    showProcess: true,
+                    riskyOnly: riskyOnly,
+                    onQueryRow: { id in
+                        Task { await model.analyzeSingle(id: id) }
+                    }
+                )
             }
         }
     }
@@ -28,10 +35,20 @@ struct ConnectionScanView: View {
             Button {
                 Task { await runScan() }
             } label: {
-                Label(isScanning || model.isAnalyzing ? "Scanning…" : "Scan Now",
+                Label(isScanning ? "Scanning…" : "Scan Now",
                       systemImage: "network.badge.shield.half.filled")
             }
             .disabled(isScanning || model.isAnalyzing)
+
+            if !model.rows.isEmpty {
+                Button {
+                    Task { await model.analyzeAll() }
+                } label: {
+                    Label(model.isAnalyzing ? "Querying…" : "Query All",
+                          systemImage: "bolt.shield")
+                }
+                .disabled(isScanning || model.isAnalyzing)
+            }
 
             if model.isAnalyzing {
                 ProgressView(value: Double(model.progress.done),
@@ -63,7 +80,7 @@ struct ConnectionScanView: View {
             Image(systemName: "network.badge.shield.half.filled")
                 .font(.system(size: 44))
                 .foregroundColor(.secondary.opacity(0.4))
-            Text("Click Scan Now to enumerate active network connections\nand check every external IP against your threat intel providers.")
+            Text("Click Scan Now to enumerate active network connections.\nUse Query to check individual IPs, or Query All to check them all.")
                 .font(.callout)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -74,7 +91,7 @@ struct ConnectionScanView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - Scan
+    // MARK: - Scan (enumerate only, no analysis)
 
     private func runScan() async {
         isScanning = true
@@ -84,11 +101,11 @@ struct ConnectionScanView: View {
             let entries = try await ConnectionScanner.scan()
             connectionCount = entries.count
 
-            let pairs: [(Artifact, String?)] = entries.map {
+            let pairs: [(artifact: Artifact, process: String?)] = entries.map {
                 (ArtifactResolver.resolve($0.remoteIP), $0.process)
             }
+            model.populate(artifacts: pairs)
             isScanning = false
-            await model.analyze(artifacts: pairs.map { (artifact: $0.0, process: $0.1) })
         } catch {
             scanError  = error.localizedDescription
             isScanning = false
