@@ -230,6 +230,29 @@ public struct IPInfoProviderResult {
     public let riskLevel: RiskLevel = .unknown
 }
 
+public struct ISCProviderResult {
+    public let reports:     Int?       // total blocked packets from this IP
+    public let targets:     Int?       // unique destination IPs targeted
+    public let asNumber:    Int?
+    public let asName:      String?
+    public let asCountry:   String?
+    public let network:     String?    // CIDR block
+    public let comment:     String?    // analyst comment
+    public let firstSeen:   String?
+    public let lastSeen:    String?
+    public let threatFeeds: [String]   // names of DShield threat feeds listing this IP
+    public let reportURL:   String
+
+    /// Risk: threat feeds = malicious, reports with targets = suspicious, no data = N/A.
+    public var riskLevel: RiskLevel {
+        if !threatFeeds.isEmpty { return .malicious }
+        guard let r = reports, r > 0 else { return .unknown }
+        if let t = targets, t > 10 { return .malicious }
+        if let t = targets, t > 0  { return .suspicious }
+        return .suspicious
+    }
+}
+
 // MARK: - Aggregate result
 
 public struct LookupResult {
@@ -243,6 +266,7 @@ public struct LookupResult {
     public var malwareBazaarResult:  MalwareBazaarResult?
     public var threatFoxResult:      ThreatFoxResult?
     public var urlhausResult:        URLhausResult?
+    public var iscResult:            ISCProviderResult?
 
     /// Nyctimene Risk Score — scored sources only.
     /// OTX pulse counts, Shodan exposure, URLScan, and IPInfo are shown as context cards.

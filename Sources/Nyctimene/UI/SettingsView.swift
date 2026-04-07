@@ -100,6 +100,24 @@ struct ProviderRow: View {
                 if !testStatus.isEmpty {
                     Text(testStatus).foregroundColor(.secondary).font(.caption)
                 }
+
+                Spacer()
+
+                // API Usage tier picker
+                if let pk = providerKey {
+                    HStack(spacing: 4) {
+                        Text("API Usage:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Picker("", selection: tierBinding(pk)) {
+                            ForEach(APIUsageTier.allCases, id: \.self) { tier in
+                                Text(tier.rawValue).tag(tier)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 200)
+                    }
+                }
             }
         }
         .onAppear { keyInput = KeychainHelper.load(for: provider) ?? "" }
@@ -132,6 +150,26 @@ struct ProviderRow: View {
         case .ipInfo:     settings.ipInfoEnabled     = val
         case .abuseCh:    settings.abuseChEnabled    = val
         }
+    }
+
+    /// Maps KeychainHelper.Provider to the canonical ProviderKey for tier storage.
+    /// abuse.ch maps to nil here since it covers 3 providers with separate keys.
+    private var providerKey: ProviderKey? {
+        switch provider {
+        case .virusTotal: return .virusTotal
+        case .otx:        return .otx
+        case .shodan:     return .shodan
+        case .urlScan:    return .urlScan
+        case .ipInfo:     return .ipInfo
+        case .abuseCh:    return nil  // individual tiers set via the sub-providers
+        }
+    }
+
+    private func tierBinding(_ pk: ProviderKey) -> Binding<APIUsageTier> {
+        Binding(
+            get: { settings.providerUsageTiers[pk.rawValue] ?? pk.defaultTier },
+            set: { settings.providerUsageTiers[pk.rawValue] = $0; onSave() }
+        )
     }
 }
 
@@ -239,17 +277,21 @@ struct AppearanceTab: View {
                 .pickerStyle(.radioGroup)
                 .onChange(of: settings.appearanceMode) { _ in
                     onSave()
-                    NotificationCenter.default.post(name: Notification.Name("com.nyctimene.reapplyBackground"), object: nil)
+                    NotificationCenter.default.post(name: WindowAppearance.reapplyNotification, object: nil)
                 }
             }
 
-            Section("Window") {
-                Toggle("Frosted glass (transparent) background", isOn: $settings.transparencyEnabled)
-                    .onChange(of: settings.transparencyEnabled) { _ in
-                        onSave()
-                        NotificationCenter.default.post(name: Notification.Name("com.nyctimene.reapplyBackground"), object: nil)
-                    }
-                Text("When enabled, the lookup window blends with your desktop using macOS vibrancy.")
+            Section("Window Style") {
+                Picker("Style", selection: $settings.windowStyle) {
+                    Text("Solid").tag("solid")
+                    Text("Frosted Vibrancy").tag("frosted")
+                }
+                .pickerStyle(.radioGroup)
+                .onChange(of: settings.windowStyle) { _ in
+                    onSave()
+                    NotificationCenter.default.post(name: WindowAppearance.reapplyNotification, object: nil)
+                }
+                Text("Applies to all Nyctimene windows.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

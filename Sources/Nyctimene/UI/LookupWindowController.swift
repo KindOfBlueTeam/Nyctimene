@@ -38,7 +38,7 @@ class LookupWindowController: NSWindowController, NSWindowDelegate {
 
         super.init(window: window)
         window.delegate = self
-        applyBackground()
+        applyAppearance()
 
         NotificationCenter.default.addObserver(
             self,
@@ -71,36 +71,11 @@ class LookupWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Background / transparency
 
     @objc private func handleReapplyBackground() {
-        applyBackground()
+        applyAppearance()
     }
 
-    func applyBackground() {
+    func applyAppearance() {
         guard let window else { return }
-        let transparent = SettingsStore.shared.settings.transparencyEnabled
-
-        if transparent {
-            window.isOpaque = false
-            window.backgroundColor = .clear
-
-            let effect = NSVisualEffectView()
-            effect.material      = .hudWindow
-            effect.blendingMode  = .behindWindow
-            effect.state         = .active
-            effect.autoresizingMask = [.width, .height]
-
-            hostingController.view.translatesAutoresizingMaskIntoConstraints = false
-            effect.addSubview(hostingController.view)
-            NSLayoutConstraint.activate([
-                hostingController.view.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-                hostingController.view.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-                hostingController.view.topAnchor.constraint(equalTo: effect.topAnchor),
-                hostingController.view.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
-            ])
-            window.contentView = effect
-        } else {
-            window.isOpaque = true
-            window.backgroundColor = nil
-            window.contentViewController = hostingController
-        }
+        WindowAppearance.apply(to: window, hostingController: hostingController)
     }
 }

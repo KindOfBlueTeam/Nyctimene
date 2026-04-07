@@ -5,7 +5,6 @@ enum MainTab: String, CaseIterable, Identifiable {
     case lookup      = "Lookup"
     case connections = "Connections"
     case pcap        = "PCAP"
-    case feeds       = "IOC Feeds"
 
     var id: String { rawValue }
 
@@ -14,7 +13,6 @@ enum MainTab: String, CaseIterable, Identifiable {
         case .lookup:      return "magnifyingglass.circle"
         case .connections: return "network.badge.shield.half.filled"
         case .pcap:        return "doc.text.magnifyingglass"
-        case .feeds:       return "list.bullet.rectangle"
         }
     }
 }
@@ -30,9 +28,6 @@ struct MainView: View {
             contentArea
         }
         .preferredColorScheme(resolvedColorScheme)
-        .background(
-            store.settings.transparencyEnabled ? Color.clear : Color(NSColor.windowBackgroundColor)
-        )
     }
 
     private var resolvedColorScheme: ColorScheme? {
@@ -101,13 +96,16 @@ struct MainView: View {
 
     // MARK: - Content
 
-    @ViewBuilder
+    // ZStack keeps ThreatLandscapeView (and its WKWebView) alive across tab switches.
+    // Other tabs use conditional rendering since they don't hold expensive persistent state.
     private var contentArea: some View {
-        switch selectedTab {
-        case .lookup:      LookupView()
-        case .connections: ConnectionScanView()
-        case .pcap:        PCAPView()
-        case .feeds:       IOCFeedsView()
+        ZStack {
+            LookupView()
+                .opacity(selectedTab == .lookup ? 1 : 0)
+                .allowsHitTesting(selectedTab == .lookup)
+
+            if selectedTab == .connections { ConnectionScanView() }
+            if selectedTab == .pcap       { PCAPView() }
         }
     }
 }

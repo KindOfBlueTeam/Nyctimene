@@ -8,7 +8,9 @@ struct LookupView: View {
     @State private var errorMsg: String?
     @State private var blockedDomains: Set<String> = []
     @State private var analysisTask: Task<Void, Never>?
-    @State private var selectedSources: Set<String> = Set(Self.sourceOrder)
+    @State private var selectedSources: Set<String> = Set(LookupView.sourceOrder)
+    @State private var identifiedArtifact: Artifact?
+    @State private var enabledProviders: Set<ProviderKey> = []
 
     // Investigation context
     @State private var caseName:  String = ""
@@ -80,23 +82,131 @@ struct LookupView: View {
     // MARK: - Search bar
 
     private var searchBar: some View {
-        HStack(spacing: 10) {
-            TextField("Domain, IP, URL, or hash — e.g. evil.com, 1.2.3.4, https://evil.com/path, d41d8cd…", text: $input)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { if !isRunning { analyze() } }
-                .disabled(isRunning)
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                TextField("Domain, IP, URL, or hash — e.g. evil.com, 1.2.3.4, https://evil.com/path, d41d8cd…", text: $input)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { if !isRunning { identifyIOC() } }
+                    .onChange(of: input) { _ in
+                        // Clear identification when input changes
+                        if identifiedArtifact != nil {
+                            identifiedArtifact = nil
+                            enabledProviders = []
+                        }
+                    }
+                    .disabled(isRunning)
 
-            if isRunning {
-                ProgressView().scaleEffect(0.7)
-                Button("Stop") { stop() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .keyboardShortcut(.escape, modifiers: [])
-            } else {
-                Button("Analyze") { analyze() }
-                    .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
-                    .keyboardShortcut(.return, modifiers: [])
+                // IOC type badge
+                if let art = identifiedArtifact {
+                    Text(art.type.rawValue.uppercased())
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+                        .foregroundColor(.accentColor)
+                }
+
+                if isRunning {
+                    ProgressView().scaleEffect(0.7)
+                    Button("Stop") { stop() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .keyboardShortcut(.escape, modifiers: [])
+                } else if identifiedArtifact != nil {
+                    Button("Analyze") { analyze() }
+                        .disabled(enabledProviders.isEmpty)
+                        .keyboardShortcut(.return, modifiers: [])
+                } else {
+                    Button("Identify") { identifyIOC() }
+                        .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .keyboardShortcut(.return, modifiers: [])
+                }
             }
+
+            // Provider chip bar — visible after IOC identification
+            if let art = identifiedArtifact, !isRunning {
+                providerChipBar(for: art.type)
+            }
+        }
+    }
+
+    // MARK: - Provider chip bar
+
+    private func providerChipBar(for type: ArtifactType) -> some View {
+        let settings = SettingsStore.shared.settings
+        return HStack(spacing: 6) {
+            ForEach(ProviderKey.allCases, id: \.self) { pk in
+                let compatible = pk.supports(type)
+                let active     = enabledProviders.contains(pk)
+                let tier       = settings.usageTier(for: pk)
+
+                Button {
+                    if compatible {
+                        if active { enabledProviders.remove(pk) }
+                        else      { enabledProviders.insert(pk) }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 10))
+                        Text(pk.displayName)
+                            .font(.system(size: 10, weight: .medium))
+                        if compatible && tier == .limited {
+                            Text("LIMITED")
+                                .font(.system(size: 7, weight: .bold))
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .background(Capsule().fill(Color.orange.opacity(0.3)))
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6).fill(
+                            !compatible ? Color.secondary.opacity(0.05) :
+                            active      ? Color.accentColor.opacity(0.12) :
+                                          Color(NSColor.controlBackgroundColor)
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(active ? Color.accentColor.opacity(0.3) : Color.clear, lineWidth: 1)
+                    )
+                    .foregroundColor(compatible ? (active ? .primary : .secondary) : .secondary.opacity(0.35))
+                }
+                .buttonStyle(.plain)
+                .disabled(!compatible)
+                .help(compatible ? pk.displayName : "\(pk.displayName) does not support \(type.rawValue.uppercased()) lookups")
+            }
+            Spacer()
+        }
+    }
+
+    private func identifyIOC() {
+        let raw = input.trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty else { return }
+
+        let artifact = ArtifactResolver.resolve(raw)
+        identifiedArtifact = artifact
+        result  = nil
+        errorMsg = nil
+
+        // Auto-enable all compatible providers that are enabled in settings
+        let settings = SettingsStore.shared.settings
+        enabledProviders = Set(ProviderKey.allCases.filter { pk in
+            pk.supports(artifact.type) && isProviderEnabled(pk, settings: settings)
+        })
+    }
+
+    private func isProviderEnabled(_ pk: ProviderKey, settings: AppSettings) -> Bool {
+        switch pk {
+        case .virusTotal:    return settings.virusTotalEnabled
+        case .otx:           return settings.otxEnabled
+        case .shodan:        return settings.shodanEnabled
+        case .urlScan:       return settings.urlScanEnabled
+        case .ipInfo:        return settings.ipInfoEnabled
+        case .malwareBazaar: return settings.abuseChEnabled
+        case .threatFox:     return settings.abuseChEnabled
+        case .urlhaus:       return settings.abuseChEnabled
+        case .isc:           return true  // no key needed
         }
     }
 
@@ -179,6 +289,7 @@ struct LookupView: View {
                     if let mb = r.malwareBazaarResult { malwareBazaarCard(mb, forScreenshot: forScreenshot) }
                     if let tf = r.threatFoxResult     { threatFoxCard(tf, forScreenshot: forScreenshot) }
                     if let uh = r.urlhausResult       { urlhausCard(uh, forScreenshot: forScreenshot) }
+                    if let isc = r.iscResult          { iscCard(isc, forScreenshot: forScreenshot) }
                 }
             }
             .frame(maxWidth: .infinity)
@@ -219,23 +330,33 @@ struct LookupView: View {
                 }
                 .frame(width: 280, height: 280)
 
-                // Source toggles
+                // Source toggles — only shown for sources that returned data
                 Divider()
                 VStack(alignment: .leading, spacing: 5) {
                     ForEach(Self.sourceOrder, id: \.self) { key in
                         if let axis = allAxes.first(where: { $0.label == key }) {
-                            let hasData = axis.level > 1
-                            Toggle(isOn: sourceBinding(key)) {
+                            if axis.level > 1 {
+                                Toggle(isOn: sourceBinding(key)) {
+                                    HStack(spacing: 6) {
+                                        Circle()
+                                            .fill(levelDotColor(axis.level))
+                                            .frame(width: 7, height: 7)
+                                        Text(Self.sourceNames[key] ?? key)
+                                            .font(.caption)
+                                    }
+                                }
+                                .toggleStyle(.checkbox)
+                            } else {
                                 HStack(spacing: 6) {
                                     Circle()
-                                        .fill(levelDotColor(axis.level))
+                                        .fill(Color.secondary.opacity(0.2))
                                         .frame(width: 7, height: 7)
                                     Text(Self.sourceNames[key] ?? key)
                                         .font(.caption)
-                                        .foregroundColor(hasData ? .primary : .secondary)
+                                        .foregroundColor(.secondary.opacity(0.4))
                                 }
+                                .padding(.leading, 22) // align with checkbox labels
                             }
-                            .toggleStyle(.checkbox)
                         }
                     }
                 }
@@ -267,7 +388,7 @@ struct LookupView: View {
 
     // MARK: - Source selection helpers
 
-    static let sourceOrder = ["VT", "OTX", "Scan", "MB", "TFox", "UHaus"]
+    static let sourceOrder = ["VT", "OTX", "Scan", "MB", "TFox", "UHaus", "ISC"]
     static let sourceNames: [String: String] = [
         "VT":    "VirusTotal",
         "OTX":   "OTX AlienVault",
@@ -275,6 +396,7 @@ struct LookupView: View {
         "MB":    "MalwareBazaar",
         "TFox":  "ThreatFox",
         "UHaus": "URLhaus",
+        "ISC":   "SANS ISC",
     ]
 
     private func sourceBinding(_ key: String) -> Binding<Bool> {
@@ -441,6 +563,23 @@ struct LookupView: View {
             if let threat = r.threat    { statRow("Threat",    threat) }
             if r.found && r.urlCount > 0 { statRow("URL count", "\(r.urlCount)") }
             if !r.tags.isEmpty           { statRow("Tags", r.tags.joined(separator: ", ")) }
+        }
+    }
+
+    private func iscCard(_ r: ISCProviderResult, forScreenshot: Bool = false) -> some View {
+        providerCard(title: "SANS ISC", icon: "shield.checkered",
+                     risk: r.riskLevel, reportURL: r.reportURL, forScreenshot: forScreenshot) {
+            if let reports = r.reports { statRow("Reports",    "\(reports)") }
+            if let targets = r.targets { statRow("Targets",    "\(targets)") }
+            if let net = r.network     { statRow("Network",    net) }
+            if let asn = r.asNumber, let name = r.asName {
+                statRow("AS", "AS\(asn) \(name)")
+            }
+            if let c = r.asCountry     { statRow("Country",    c) }
+            if let first = r.firstSeen { statRow("First seen", first) }
+            if let last  = r.lastSeen  { statRow("Last seen",  last) }
+            if !r.threatFeeds.isEmpty  { statRow("Threat feeds", r.threatFeeds.joined(separator: ", ")) }
+            if let comment = r.comment { statRow("Comment",    comment) }
         }
     }
 
@@ -653,41 +792,40 @@ struct LookupView: View {
     }
 
     private func analyze() {
-        let raw = input.trimmingCharacters(in: .whitespaces)
-        guard !raw.isEmpty else { return }
+        guard let artifact = identifiedArtifact else { return }
+        guard !enabledProviders.isEmpty else { return }
 
         analysisTask?.cancel()
         isRunning = true
         result    = nil
         errorMsg  = nil
 
-        let artifact = ArtifactResolver.resolve(raw)
-        let settings = SettingsStore.shared.settings
+        let providers = enabledProviders
 
         analysisTask = Task {
             var r = LookupResult(artifact: artifact)
             var errors: [String] = []
 
             await withTaskGroup(of: Void.self) { group in
-                if settings.virusTotalEnabled {
+                if providers.contains(.virusTotal) {
                     group.addTask {
                         do    { r.vtResult = try await VTClient.shared.lookup(artifact) }
                         catch { errors.append("VT: \(error.localizedDescription)") }
                     }
                 }
-                if settings.otxEnabled {
+                if providers.contains(.otx) {
                     group.addTask {
                         do    { r.otxResult = try await OTXClient.shared.lookup(artifact) }
                         catch { errors.append("OTX: \(error.localizedDescription)") }
                     }
                 }
-                if settings.shodanEnabled && !artifact.type.isHash {
+                if providers.contains(.shodan) {
                     group.addTask {
                         do    { r.shodanResult = try await ShodanClient.shared.lookup(artifact) }
                         catch { errors.append("Shodan: \(error.localizedDescription)") }
                     }
                 }
-                if settings.urlScanEnabled && !artifact.type.isHash {
+                if providers.contains(.urlScan) {
                     group.addTask {
                         do    { r.urlScanResult = try await URLScanClient.shared.lookup(artifact) }
                         catch { errors.append("URLScan: \(error.localizedDescription)") }
@@ -698,27 +836,33 @@ struct LookupView: View {
                         r.domainInfo = try? await RDAPClient.shared.lookup(artifact)
                     }
                 }
-                if settings.ipInfoEnabled && artifact.type == .ip {
+                if providers.contains(.ipInfo) {
                     group.addTask {
                         r.ipInfoResult = try? await IPInfoClient.shared.lookup(artifact)
                     }
                 }
-                if settings.abuseChEnabled {
-                    if artifact.type.isHash && artifact.type != .sha512 {
-                        group.addTask {
-                            do    { r.malwareBazaarResult = try await MalwareBazaarClient.shared.lookup(artifact) }
-                            catch { errors.append("MalwareBazaar: \(error.localizedDescription)") }
-                        }
+                if providers.contains(.isc) {
+                    group.addTask {
+                        do    { r.iscResult = try await ISCClient.shared.lookup(artifact) }
+                        catch { errors.append("ISC: \(error.localizedDescription)") }
                     }
+                }
+                if providers.contains(.malwareBazaar) {
+                    group.addTask {
+                        do    { r.malwareBazaarResult = try await MalwareBazaarClient.shared.lookup(artifact) }
+                        catch { errors.append("MalwareBazaar: \(error.localizedDescription)") }
+                    }
+                }
+                if providers.contains(.threatFox) {
                     group.addTask {
                         do    { r.threatFoxResult = try await ThreatFoxClient.shared.lookup(artifact) }
                         catch { errors.append("ThreatFox: \(error.localizedDescription)") }
                     }
-                    if artifact.type != .sha1 && artifact.type != .sha512 {
-                        group.addTask {
-                            do    { r.urlhausResult = try await URLhausClient.shared.lookup(artifact) }
-                            catch { errors.append("URLhaus: \(error.localizedDescription)") }
-                        }
+                }
+                if providers.contains(.urlhaus) {
+                    group.addTask {
+                        do    { r.urlhausResult = try await URLhausClient.shared.lookup(artifact) }
+                        catch { errors.append("URLhaus: \(error.localizedDescription)") }
                     }
                 }
             }
@@ -752,6 +896,7 @@ struct LookupView: View {
         let mb  = r.malwareBazaarResult
         let tf  = r.threatFoxResult
         let uh  = r.urlhausResult
+        let isc = r.iscResult
         return [
             RadarAxis(label: "VT",    level: vtLevel(vt),
                       rawDetail: vt.map { "\($0.score) / \($0.total) engines" }),
@@ -765,6 +910,8 @@ struct LookupView: View {
                       rawDetail: tf.map { $0.found ? "\($0.malwareFamily ?? $0.threatType ?? "Found") (\($0.confidenceLevel)%)" : "Not found" }),
             RadarAxis(label: "UHaus", level: uhLevel(uh),
                       rawDetail: uh.map { r in r.found ? (r.urlStatus ?? "Found") + (r.urlCount > 0 ? " · \(r.urlCount) URLs" : "") : "Not found" }),
+            RadarAxis(label: "ISC",   level: iscLevel(isc),
+                      rawDetail: isc.map { r in r.reports.map { "\($0) reports" } ?? "No data" }),
         ]
     }
 
@@ -826,6 +973,15 @@ struct LookupView: View {
         if r.pulseCount <= 2           { return 3 }
         if r.pulseCount <= 9           { return 4 }
         return 5
+    }
+
+    private func iscLevel(_ r: ISCProviderResult?) -> Int {
+        guard let r else { return 1 }
+        if !r.threatFeeds.isEmpty              { return 5 }
+        guard let reports = r.reports, reports > 0 else { return 1 }
+        if let t = r.targets, t > 10           { return 5 }
+        if let t = r.targets, t > 0            { return 4 }
+        return 3
     }
 
     private func urlScanLevel(_ r: URLScanProviderResult?) -> Int {

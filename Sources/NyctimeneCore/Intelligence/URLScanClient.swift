@@ -8,7 +8,7 @@ public class URLScanClient {
 
     private init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForRequest = 15
         session = URLSession(configuration: config)
     }
 
@@ -40,29 +40,55 @@ public class URLScanClient {
               let results = json["results"] as? [[String: Any]]
         else { throw IntelError.decodingError }
 
+        let scanCount = results.count
+        guard scanCount > 0 else {
+            return URLScanProviderResult(
+                scanCount: 0, maliciousCount: 0, latestScore: nil,
+                reportURL: "https://urlscan.io/search/#\(query)", tags: [])
+        }
+
+        // Fetch verdicts from the most recent scan results (up to 3 to save API calls)
         var maliciousCount = 0
         var latestScore: Int?
         var allTags: Set<String> = []
 
-        for result in results {
-            if let verdicts = result["verdicts"] as? [String: Any] {
-                if let overall = verdicts["overall"] as? [String: Any] {
-                    if overall["malicious"] as? Bool == true { maliciousCount += 1 }
-                    if let score = overall["score"] as? Int, latestScore == nil {
-                        latestScore = score
-                    }
-                    if let tags = overall["tags"] as? [String] {
-                        tags.forEach { allTags.insert($0) }
-                    }
-                }
+        let toFetch = min(results.count, 3)
+        for i in 0..<toFetch {
+            guard let resultURL = results[i]["result"] as? String,
+                  let rURL = URL(string: resultURL)
+            else { continue }
+
+            guard let resultData = try? await fetch(rURL, key: key),
+                  let resultJSON = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any],
+                  let verdicts   = resultJSON["verdicts"] as? [String: Any],
+                  let overall    = verdicts["overall"] as? [String: Any]
+            else { continue }
+
+            if overall["malicious"] as? Bool == true { maliciousCount += 1 }
+            if let score = overall["score"] as? Int, latestScore == nil {
+                latestScore = score
+            }
+            if let tags = overall["tags"] as? [String] {
+                tags.forEach { allTags.insert($0) }
+            }
+
+            // Also check community verdicts
+            if let community = verdicts["community"] as? [String: Any],
+               let votesMal  = community["votesMalicious"] as? Int, votesMal > 0 {
+                if overall["malicious"] as? Bool != true { maliciousCount += 1 }
+            }
+
+            // Check engine verdicts
+            if let engines = verdicts["engines"] as? [String: Any],
+               let engMal  = engines["maliciousTotal"] as? Int, engMal > 0 {
+                if overall["malicious"] as? Bool != true { maliciousCount += 1 }
             }
         }
 
-        // Build a search URL the user can open
         let searchURL = "https://urlscan.io/search/#\(query)"
 
         return URLScanProviderResult(
-            scanCount:      results.count,
+            scanCount:      scanCount,
             maliciousCount: maliciousCount,
             latestScore:    latestScore,
             reportURL:      searchURL,

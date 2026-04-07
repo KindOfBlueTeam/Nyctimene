@@ -1,25 +1,28 @@
 import AppKit
 import SwiftUI
-import NyctimeneCore
 
-class SettingsWindowController: NSWindowController {
-    static let shared = SettingsWindowController()
+class ThreatLandscapeWindowController: NSWindowController, NSWindowDelegate {
 
-    private lazy var hostingController: NSHostingController<SettingsView> = {
-        NSHostingController(rootView: SettingsView())
+    static let shared = ThreatLandscapeWindowController()
+
+    private lazy var hostingController: NSHostingController<ThreatLandscapeView> = {
+        NSHostingController(rootView: ThreatLandscapeView())
     }()
 
-    private init() {
+    init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 520),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
+            styleMask:   [.titled, .closable, .resizable, .miniaturizable],
+            backing:     .buffered,
+            defer:       false
         )
-        window.title = "Nyctimene Settings"
-        window.center()
+        window.title = "Threat Landscape"
         window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 700, height: 400)
+        window.center()
+
         super.init(window: window)
+        window.delegate = self
         applyAppearance()
 
         NotificationCenter.default.addObserver(
